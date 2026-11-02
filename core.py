@@ -47,60 +47,39 @@ def impute_mean(gt):
 def parse_ped(b, n_map):
     lines = [l.strip() for l in _rt(b).splitlines() if l.strip()]
     if not lines: raise ValueError(".ped vide")
-    
-    first_line = lines[0]
-    
-    # Détection du séparateur (virgule, tabulation ou espace)
-    if "\t" in first_line: sep = "\t"
-    elif "," in first_line: sep = ","
-    elif ";" in first_line: sep = ";"
-    else: sep = None # split() gère les espaces
-    
-    p0 = first_line.split(sep) if sep else first_line.split()
-    
-    # Détection de l'en-tête (Header) à ignorer
-    if len(p0) <= 6 or "FID" in p0[0].upper() or "IID" in p0[1].upper() or first_line.startswith("#"):
+
+    # 1. Ignorer la ligne d'en-tête (#Sample Filename...)
+    if lines[0].startswith("#") or "Filename" in lines[0] or "Sample" in lines[0]:
         lines = lines[1:]
-        if not lines: raise ValueError("Fichier vide après l'en-tête.")
-        first_line = lines[0]
-        p0 = first_line.split(sep) if sep else first_line.split()
-        
-    n_cols = len(p0)
-    
-    # Détection du format : .ped classique (2 colonnes/SNP) ou .raw (1 colonne/SNP)
-    if n_cols >= (n_map * 2 + 6) - 10:
-        is_raw = False
-        n_ped = (n_cols - 6) // 2
-    elif n_cols >= (n_map + 6) - 10:
-        is_raw = True
-        n_ped = n_cols - 6
-    else:
-        raise ValueError(f"Format inconnu ({n_cols} colonnes lues). Aperçu: {first_line[:60]}")
-        
-    n = min(n_map, n_ped)
-    ec = 6 + (n if is_raw else 2 * n)
-    
+
+    first_line = lines[0]
+    sep = "\t" if "\t" in first_line else "," if "," in first_line else None
+
     fids, iids, rows = [], [], []
     for line in lines:
         p = line.split(sep) if sep else line.split()
-        if len(p) >= ec:
-            fids.append(p[0]); iids.append(p[1])
-            rows.append(p[6:ec])
-            
-    if not iids: raise ValueError("Aucun individu valide (ou lignes trop courtes).")
+        if len(p) < 2: continue
+        
+        iid = p[0].strip() # Ex: ARG01_A1...CEL
+        fid = "NWC_Group"  # FID générique (on le liera plus tard aux métadonnées)
+        fids.append(fid)
+        iids.append(iid)
+        
+        rows.append(p[1:]) # Les génotypes commencent ici
+
+    if not iids: raise ValueError("Aucun échantillon trouvé.")
     
+    n = min(n_map, len(rows[0]))
+    gt = np.full((len(iids), n), np.nan, dtype=np.float32)
     ac = [Counter() for _ in range(n)]
+
     for r in rows:
         for j in range(n):
-            if is_raw:
-                a1 = r[j].strip()
-                if a1 not in ("0", "NA", "nan", "-"):
-                    ac[j].update([a1])
-            else:
-                a1, a2 = r[2*j].strip(), r[2*j + 1].strip()
-                if a1 not in ("0", "NA", "nan", "-") and a2 not in ("0", "NA", "nan", "-"):
-                    ac[j].update([a1, a2])
-                    
+            if j >= len(r): continue
+            geno = r[j].replace("/", " ").strip().split()
+            if len(geno) >= 2 and geno[0] != "0" and geno[1] != "0":
+                ac[j].update([geno[0], geno[1]])
+
     alleles_A1, alleles_A2 = [], []
     for c in ac:
         common = c.most_common(2)
@@ -110,21 +89,16 @@ def parse_ped(b, n_map):
             alleles_A1.append(common[0][0]); alleles_A2.append(".")
         else: 
             alleles_A1.append("."); alleles_A2.append(".")
-            
+
     minor = [min(c, key=c.get) if len(c) >= 2 else None for c in ac]
-    gt = np.full((len(iids), n), np.nan, dtype=np.float32)
-    
+
     for i, r in enumerate(rows):
         for j in range(n):
-            if is_raw:
-                val = r[j].strip()
-                if val not in ("0", "NA", "nan", "-"):
-                    try: gt[i, j] = float(val)
-                    except: pass
-            else:
-                if minor[j] and r[2*j] not in ("0", "NA", "-") and r[2*j+1] not in ("0", "NA", "-"):
-                    gt[i, j] = (r[2*j] == minor[j]) + (r[2*j+1] == minor[j])
-                    
+            if j >= len(r): continue
+            geno = r[j].replace("/", " ").strip().split()
+            if len(geno) >= 2 and minor[j] and geno[0] != "0" and geno[1] != "0":
+                gt[i, j] = (geno[0] == minor[j]) + (geno[1] == minor[j])
+
     return gt, pd.DataFrame({"FID": fids, "IID": iids}), alleles_A1, alleles_A2
 
 def parse_vcf(b):
