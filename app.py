@@ -10,7 +10,7 @@ import streamlit as st
 from config_nw import SPECIES_CONFIG, MAP_SOURCES, REFERENCE, get_config
 from core      import (parse_map, parse_ped, parse_vcf, load_pheno, match_pheno,
                         rec_fid, _ca, apply_qc, miss_ind, miss_snp,
-                        build_plink, build_vcf)
+                        build_plink, build_vcf, impute_mean)
 from analyses  import *  # noqa
 
 warnings.filterwarnings("ignore", category=RuntimeWarning)
@@ -148,8 +148,13 @@ def main():
             try:
                 meta_df = pd.read_csv(meta_file)
                 if "Sample_Filename" in meta_df.columns and "Species" in meta_df.columns:
+                    # Gérer l'absence de la colonne Breed sans planter
+                    cols_to_merge = ["Sample_Filename", "Species"]
+                    if "Breed" in meta_df.columns:
+                        cols_to_merge.append("Breed")
+                        
                     st.session_state.ind_df = st.session_state.ind_df.merge(
-                        meta_df[["Sample_Filename", "Species", "Breed"]],
+                        meta_df[cols_to_merge],
                         left_on="IID", right_on="Sample_Filename", how="left"
                     )
                     st.session_state.ind_df["FID"] = st.session_state.ind_df["Species"].fillna(st.session_state.ind_df["FID"])
