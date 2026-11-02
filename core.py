@@ -44,14 +44,31 @@ def impute_mean(gt):
     if nm.any(): g[nm] = np.take(cm, np.where(nm)[1])
     return g
 
+def parse_map(b):
+    rows = []
+    for line in _rt(b).splitlines():
+        p = line.split()
+        if len(p) < 4: continue
+        try: cm = float(p[2]) if p[2] not in ("0", ".", "NA") else 0.0
+        except ValueError: cm = 0.0
+        try: bp = int(float(p[3]))
+        except (ValueError, TypeError): continue
+        rows.append({"CHR": str(p[0]), "SNP": p[1], "CM": cm, "BP": bp})
+    if not rows: raise ValueError(".map vide ou invalide")
+    df = pd.DataFrame(rows)
+    if df["BP"].max() < 10_000: df["BP"] = df["BP"] * 1_000_000
+    elif df["BP"].max() < 10_000_000: df["BP"] = df["BP"] * 1_000
+    return df
+
 def parse_ped(b, n_map):
     lines = [l.strip() for l in _rt(b).splitlines() if l.strip()]
     if not lines: raise ValueError(".ped vide")
 
-    # 1. Ignorer la ligne d'en-tête (#Sample Filename...)
+    # Ignorer la ligne d'en-tête (#Sample Filename...)
     if lines[0].startswith("#") or "Filename" in lines[0] or "Sample" in lines[0]:
         lines = lines[1:]
 
+    if not lines: raise ValueError(".ped vide après l'en-tête")
     first_line = lines[0]
     sep = "\t" if "\t" in first_line else "," if "," in first_line else None
 
@@ -60,12 +77,11 @@ def parse_ped(b, n_map):
         p = line.split(sep) if sep else line.split()
         if len(p) < 2: continue
         
-        iid = p[0].strip() # Ex: ARG01_A1...CEL
-        fid = "NWC_Group"  # FID générique (on le liera plus tard aux métadonnées)
+        iid = p[0].strip() 
+        fid = "NWC_Group"  
         fids.append(fid)
         iids.append(iid)
-        
-        rows.append(p[1:]) # Les génotypes commencent ici
+        rows.append(p[1:]) 
 
     if not iids: raise ValueError("Aucun échantillon trouvé.")
     
