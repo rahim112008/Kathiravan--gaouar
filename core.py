@@ -44,21 +44,62 @@ def impute_mean(gt):
     if nm.any(): g[nm] = np.take(cm, np.where(nm)[1])
     return g
 
-def parse_map(b):
-    rows = []
-    for line in _rt(b).splitlines():
-        p = line.split()
-        if len(p) < 4: continue
-        try: cm = float(p[2]) if p[2] not in ("0", ".", "NA") else 0.0
-        except ValueError: cm = 0.0
-        try: bp = int(float(p[3]))
-        except (ValueError, TypeError): continue
-        rows.append({"CHR": str(p[0]), "SNP": p[1], "CM": cm, "BP": bp})
-    if not rows: raise ValueError(".map vide ou invalide")
-    df = pd.DataFrame(rows)
-    if df["BP"].max() < 10_000: df["BP"] = df["BP"] * 1_000_000
-    elif df["BP"].max() < 10_000_000: df["BP"] = df["BP"] * 1_000
-    return df
+def parse_ped(b, n_map):
+    lines = [l.strip() for l in _rt(b).splitlines() if l.strip()]
+    if not lines: raise ValueError(".ped vide")
+    
+    # Détection automatique du séparateur (virgule, tabulation ou espace)
+    first_line = lines[0]
+    if "," in first_line and "\t" not in first_line and " " not in first_line:
+        sep = ","
+    elif "\t" in first_line:
+        sep = "\t"
+    else:
+        sep = None # Espace
+        
+    # Vérifier s'il y a un en-tête (Header) à ignorer
+    if first_line.upper().startswith("FID") or first_line.upper().startswith("IID") or first_line.startswith("#"):
+        lines = lines[1:] # On supprime la première ligne
+        if not lines: raise ValueError(".ped vide après l'en-tête")
+        first_line = lines[0]
+
+    p0 = first_line.split(sep)
+    n_ped = max(0, (len(p0) - 6) // 2)
+    
+    if n_ped < 7: 
+        raise ValueError(f"PED invalide : {n_ped} SNP détectés. Colonnes lues: {len(p0)}. Vérifiez le format.")
+        
+    n = min(n_map, n_ped); ec = 6 + 2 * n
+    fids, iids, rows = [], [], []
+    
+    for line in lines:
+        p = line.split(sep)
+        if len(p) >= ec:
+            fids.append(p[0]); iids.append(p[1]); rows.append(p[6:6 + 2 * n])
+            
+    if not iids: raise ValueError("Aucun individu valide")
+    ac = [Counter() for _ in range(n)]
+    for r in rows:
+        for j in range(n):
+            a1, a2 = r[2*j].strip(), r[2*j + 1].strip()
+            if a1 != "0" and a2 != "0": ac[j].update([a1, a2])
+            
+    alleles_A1, alleles_A2 = [], []
+    for c in ac:
+        common = c.most_common(2)
+        if len(common) >= 2: alleles_A1.append(common[0][0]); alleles_A2.append(common[1][0])
+        elif len(common) == 1: alleles_A1.append(common[0][0]); alleles_A2.append(".")
+        else: alleles_A1.append("."); alleles_A2.append(".")
+        
+    minor = [min(c, key=c.get) if len(c) >= 2 else None for c in ac]
+    gt = np.full((len(iids), n), np.nan, dtype=np.float32)
+    
+    for i, r in enumerate(rows):
+        for j in range(n):
+            if minor[j] and r[2*j] != "0" and r[2*j + 1] != "0":
+                gt[i, j] = (r[2*j] == minor[j]) + (r[2*j + 1] == minor[j])
+                
+    return gt, pd.DataFrame({"FID": fids, "IID": iids}), alleles_A1, alleles_A2
 
 def parse_ped(b, n_map):
     lines = [l.strip() for l in _rt(b).splitlines() if l.strip()]
