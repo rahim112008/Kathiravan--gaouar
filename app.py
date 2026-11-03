@@ -1,4 +1,4 @@
-"""app.py — NW Camelids Genomics Platform (Global & Corrected)"""
+"""app.py — NW Camelids Genomics Platform (Excel Direct)"""
 import gzip, warnings
 import numpy as np
 import pandas as pd
@@ -6,6 +6,7 @@ import plotly.express as px
 import plotly.graph_objects as go
 import requests
 import streamlit as st
+import re
 
 from config_nw import SPECIES_CONFIG, MAP_SOURCES, REFERENCE, get_config
 from core      import (parse_map, parse_ped, parse_vcf, load_pheno, match_pheno,
@@ -48,7 +49,6 @@ def load_map_uploaded(file_bytes: bytes, fname: str) -> pd.DataFrame:
 
 @st.cache_data(show_spinner=False)
 def compute_diversity_metrics(gt, labels):
-    """Calcule les métriques de diversité (Ho, He, MAF) par population."""
     pops = np.unique(labels)
     results = []
     for p in pops:
@@ -56,19 +56,12 @@ def compute_diversity_metrics(gt, labels):
         sub_gt = gt[mask]
         if sub_gt.shape[0] == 0: continue
         n_ind = sub_gt.shape[0]
-        
         p_freq = np.nanmean(sub_gt, axis=0) / 2.0
         maf = np.nanmean(np.minimum(p_freq, 1 - p_freq))
         ho = np.nanmean(np.nanmean(sub_gt == 1, axis=0))
         he = np.nanmean(2 * p_freq * (1 - p_freq))
-        
-        results.append({
-            "Population": p,
-            "N": n_ind,
-            "Ho": round(float(ho), 4),
-            "He": round(float(he), 4),
-            "MAF": round(float(maf), 4)
-        })
+        results.append({"Population": p, "N": n_ind, "Ho": round(float(ho), 4),
+                        "He": round(float(he), 4), "MAF": round(float(maf), 4)})
     return pd.DataFrame(results)
 
 def main():
@@ -87,9 +80,6 @@ def main():
         else:
             cfg = get_config(species_key)
             st.info(f"Mode spécifique : {species_key}")
-
-        st.markdown(f"**Caryotype** : {cfg['karyotype']}")
-        st.markdown(f"**Taxon NCBI** : `{cfg['taxon']}`")
 
         if st.session_state.current_species is None:
             st.session_state.current_species = species_key
@@ -120,10 +110,8 @@ def main():
                     with st.spinner("Parsing…"):
                         gt, ind, a1, a2 = parse_ped(ped.read(), len(st.session_state.snp_df))
                     snp = st.session_state.snp_df.copy()
-                    if len(snp) > gt.shape[1]:
-                        snp = snp.iloc[:gt.shape[1]].reset_index(drop=True)
-                    elif len(snp) < gt.shape[1]:
-                        gt = gt[:, :len(snp)]
+                    if len(snp) > gt.shape[1]: snp = snp.iloc[:gt.shape[1]].reset_index(drop=True)
+                    elif len(snp) < gt.shape[1]: gt = gt[:, :len(snp)]
                     snp["A1"] = a1; snp["A2"] = a2
                     reset_derived()
                     st.session_state.update({"gt": gt, "ind_df": rec_fid(ind), "snp_df": snp})
@@ -141,27 +129,49 @@ def main():
                 except Exception as e:
                     st.error(f"❌ {e}")
 
+        # --- METADONNEES DIRECTEMENT DEPUIS L'EXCEL ---
         st.divider()
-        st.header("📋 2.5 Métadonnées (Optionnel)")
-        meta_file = st.file_uploader("nwc_metadata.csv", type=["csv"], key="meta_up")
+        st.header("📋 2.5 Métadonnées")
+        st.caption("Uploadez directement le fichier Excel de Kathiravan.")
+        meta_file = st.file_uploader("NWC_Meta_Sample_Details_Suheil.xlsx", type=["xlsx", "csv"], key="meta_up")
+        
         if meta_file and st.session_state.ind_df is not None and st.button("🔗 Lier Métadonnées", use_container_width=True):
             try:
-                meta_df = pd.read_csv(meta_file)
-                if "Sample_Filename" in meta_df.columns and "Species" in meta_df.columns:
-                    # Gérer l'absence de la colonne Breed sans planter
-                    cols_to_merge = ["Sample_Filename", "Species"]
-                    if "Breed" in meta_df.columns:
-                        cols_to_merge.append("Breed")
-                        
-                    st.session_state.ind_df = st.session_state.ind_df.merge(
-                        meta_df[cols_to_merge],
-                        left_on="IID", right_on="Sample_Filename", how="left"
-                    )
-                    st.session_state.ind_df["FID"] = st.session_state.ind_df["Species"].fillna(st.session_state.ind_df["FID"])
-                    st.success("✅ Métadonnées liées !")
-                    st.dataframe(st.session_state.ind_df[["IID", "FID"]].head(5))
+                if meta_file.name.endswith(".xlsx"):
+                    # Lecture directe de l'Excel sur Streamlit
+                    df_excel = pd.read_excel(meta_file, sheet_name="Sample_Details", header=0)
+                    # Colonne 8 (I) = Nom, Colonne 17 (R) = Breed
+                    meta = df_excel.iloc[:, [8, 17]].copy()
+                    meta.columns = ["Sample_Filename", "Breed"]
+                    meta = meta.dropna(subset=["Sample_Filename"])
+                    meta = meta[meta["Sample_Filename"].astype(str).str.contains(".CEL", na=False)]
+
+                    def map_breed_to_species(breed):
+                        b = str(breed).upper()
+                        if "HUACAYA" in b or "SURI" in b or "ALPACA" in b: return "Alpaga"
+                        if "GUANACO" in b: return "Guanaco"
+                        if "LLAMA" in b: return "Lama"
+                        if "VICUGNA" in b or "V.MENSALIS" in b or "V.SP" in b: return "Vigogne"
+                        return "Autre"
+
+                    meta["Species"] = meta["Breed"].apply(map_breed_to_species)
+                    meta_df = meta[["Sample_Filename", "Species"]].copy()
                 else:
-                    st.error("Le CSV doit contenir 'Sample_Filename' et 'Species'")
+                    # Lecture CSV classique
+                    meta_df = pd.read_csv(meta_file)
+
+                # Fusion
+                st.session_state.ind_df = st.session_state.ind_df.merge(
+                    meta_df[["Sample_Filename", "Species"]],
+                    left_on="IID", right_on="Sample_Filename", how="left"
+                )
+                st.session_state.ind_df["FID"] = st.session_state.ind_df["Species"].fillna(st.session_state.ind_df["FID"])
+                
+                st.success("✅ Métadonnées liées !")
+                st.write("Répartition :")
+                st.write(st.session_state.ind_df["FID"].value_counts())
+                st.dataframe(st.session_state.ind_df[["IID", "FID"]].head(5))
+                
             except Exception as e:
                 st.error(f"❌ Erreur : {e}")
 
@@ -177,26 +187,14 @@ def main():
         ld_r2     = st.slider("LD r²",       0.05, 0.5, 0.2, 0.05)
 
     st.title(f"🦙 {species_key}")
-    st.caption(f"Référence **{REFERENCE['name']}** ({REFERENCE['accession']}) · "
-               f"[NCBI]({REFERENCE['ncbi_url']})")
-
     if st.session_state.gt is None:
-        st.info("""
-        ### 👋 Bienvenue
-        1. **Sidebar →** charger `.map`
-        2. **Sidebar →** charger `.ped`
-        3. **Sidebar →** lier `nwc_metadata.csv`
-        4. **Onglet QC →** lancer QC
-        """)
+        st.info("👋 Chargez `.map`, `.ped` et le fichier Excel des métadonnées.")
         return
 
     TABS = st.tabs([
         "🏠 Accueil", "🧹 QC", "✂️ LD", "🧬 Structure", "🎨 Admixture",
         "📈 Démographie", "🌳 Phylogénie", "🔍 Sélection",
-        "🧪 GWAS", "🎯 Post-GWAS", "📈 GBLUP", "🧬 Annotation",
-        "🧬 VEP & NCBI", "🧬 Structure 3D", "🧬 Alignement",
-        "🔬 Méta-analyse", "🧠 ML", "🧬 Haplotypes", "🌍 LiftOver", "📤 Export",
-        "📊 Diversité",
+        "🧪 GWAS", "📊 Diversité"
     ])
 
     with TABS[0]:
@@ -206,26 +204,20 @@ def main():
         c3.metric("Chromosomes", st.session_state.snp_df["CHR"].nunique())
         c4.metric("Groupes",     st.session_state.ind_df["FID"].nunique())
         ch = st.session_state.snp_df["CHR"].astype(str).value_counts().sort_index()
-        st.plotly_chart(px.bar(x=ch.index, y=ch.values, labels={"x": "Chromosome", "y": "Nb SNP"}),
-                        use_container_width=True, key="home_bar")
-        st.subheader("📋 Métadonnées")
-        st.dataframe(st.session_state.ind_df.head(20), use_container_width=True)
+        st.plotly_chart(px.bar(x=ch.index, y=ch.values, labels={"x": "Chromosome", "y": "Nb SNP"}), use_container_width=True)
 
     with TABS[1]:
-        if st.button("▶ Lancer QC", type="primary", key="qc_btn"):
+        if st.button("▶ Lancer QC", type="primary"):
             try:
                 params = {"geno": geno, "mind": mind, "maf": maf_t, "hwe": hwe_t, "het_sd": het_sd}
                 gf, inf, snf, gp, ip, sp, qs = apply_qc(
                     st.session_state.gt, st.session_state.ind_df,
                     st.session_state.snp_df, params, cfg["autosomes"],
                     keep_autosomes=keep_auto, rem_out=rem_out)
-                st.session_state.update({
-                    "gt_filt": gf, "ind_filt": inf, "snp_filt": snf,
-                    "gt_pre": gp, "ind_pre": ip, "snp_pre": sp, "qc_stats": qs})
+                st.session_state.update({"gt_filt": gf, "ind_filt": inf, "snp_filt": snf, "qc_stats": qs})
                 st.success(f"✅ {gf.shape[0]} × {gf.shape[1]}")
             except Exception as e:
                 st.error(f"❌ {e}")
-
         if st.session_state.qc_stats:
             s = st.session_state.qc_stats
             c1, c2, c3, c4 = st.columns(4)
@@ -233,28 +225,18 @@ def main():
             c2.metric("SNP finaux",  s["n_snp_final"], delta=-s["excluded_snp"])
             c3.metric("Outliers",    s["trace"].get("het", 0))
             c4.metric("Exclus X/Y/MT", s["trace"].get("autosomes", 0))
-            st.plotly_chart(plot_missing(miss_ind(st.session_state.gt), miss_snp(st.session_state.gt)),
-                            use_container_width=True, key="qc_missing")
-            trace_df = pd.DataFrame(list(s["trace"].items()), columns=["Étape", "Exclus"])
-            st.dataframe(trace_df, use_container_width=True)
 
     with TABS[2]:
         if st.session_state.gt_filt is not None:
-            if st.button("▶ LD Pruning", key="ld_btn"):
+            if st.button("▶ LD Pruning"):
                 keep = ld_pruning(st.session_state.gt_filt, 50, 5, ld_r2)
                 st.session_state.update({
                     "gt_pruned": st.session_state.gt_filt[:, keep],
                     "snp_pruned": st.session_state.snp_filt[keep].reset_index(drop=True)})
                 st.success(f"✅ {st.session_state.gt_pruned.shape[1]} SNP")
-            if st.session_state.gt_pruned is not None:
-                if st.button("▶ LD Decay", key="ld_decay_btn"):
-                    st.session_state.ld_df = ld_decay(st.session_state.gt_pruned, st.session_state.snp_pruned)
-                if st.session_state.ld_df is not None:
-                    f = plot_ld(st.session_state.ld_df)
-                    if f: st.plotly_chart(f, use_container_width=True, key="ld_plot")
 
     with TABS[3]:
-        if st.session_state.gt_filt is not None and st.button("▶ PCA + MDS", key="struct_btn"):
+        if st.session_state.gt_filt is not None and st.button("▶ PCA + MDS"):
             try:
                 gu = st.session_state.gt_pruned if st.session_state.gt_pruned is not None else st.session_state.gt_filt
                 s, v = pca_analysis(gu, 10)
@@ -265,15 +247,13 @@ def main():
             except Exception as e:
                 st.error(f"❌ {e}")
         if st.session_state.pca_s is not None:
-            st.plotly_chart(plot_pca(st.session_state.pca_s, st.session_state.pca_v, st.session_state.ind_filt["FID"].values),
-                            use_container_width=True, key="struct_pca")
-            st.plotly_chart(plot_mds(st.session_state.mds_c, st.session_state.ind_filt["FID"].values),
-                            use_container_width=True, key="struct_mds")
+            st.plotly_chart(plot_pca(st.session_state.pca_s, st.session_state.pca_v, st.session_state.ind_filt["FID"].values), use_container_width=True)
+            st.plotly_chart(plot_mds(st.session_state.mds_c, st.session_state.ind_filt["FID"].values), use_container_width=True)
 
     with TABS[4]:
         if st.session_state.gt_filt is not None:
             K = st.slider("K choisi", 2, 10, 4)
-            if st.button("▶ Lancer NMF", key="admix_btn"):
+            if st.button("▶ Lancer NMF"):
                 try:
                     gu = st.session_state.gt_pruned if st.session_state.gt_pruned is not None else st.session_state.gt_filt
                     Q, _ = admixture_nmf(gu, K=K)
@@ -282,13 +262,12 @@ def main():
                 except Exception as e:
                     st.error(f"❌ {e}")
             if st.session_state.admix_Q is not None:
-                f, qdf = plot_admix(st.session_state.admix_Q, st.session_state.ind_filt["IID"].values,
-                                    st.session_state.ind_filt["FID"].values, st.session_state.admix_K)
-                st.plotly_chart(f, use_container_width=True, key="admix_plot")
+                f, _ = plot_admix(st.session_state.admix_Q, st.session_state.ind_filt["IID"].values, st.session_state.ind_filt["FID"].values, st.session_state.admix_K)
+                st.plotly_chart(f, use_container_width=True)
 
     with TABS[5]:
         if st.session_state.gt_filt is not None:
-            if st.button("▶ ROH + Ne", key="dem_btn"):
+            if st.button("▶ ROH + Ne"):
                 try:
                     gu = st.session_state.gt_pruned if st.session_state.gt_pruned is not None else st.session_state.gt_filt
                     su = st.session_state.snp_pruned if st.session_state.snp_pruned is not None else st.session_state.snp_filt
@@ -299,12 +278,11 @@ def main():
                     st.error(f"❌ {e}")
             if st.session_state.froh is not None:
                 df_f = pd.DataFrame({"FROH": st.session_state.froh, "Pop": st.session_state.ind_filt["FID"].values})
-                st.plotly_chart(px.histogram(df_f, x="FROH", color="Pop", nbins=50), use_container_width=True, key="roh_hist")
-                st.dataframe(df_f.groupby("Pop")["FROH"].agg(["mean", "std", "count"]).round(4), use_container_width=True)
+                st.plotly_chart(px.histogram(df_f, x="FROH", color="Pop", nbins=50), use_container_width=True)
 
     with TABS[6]:
         if st.session_state.gt_filt is not None:
-            if st.button("▶ UPGMA", key="phylo_btn"):
+            if st.button("▶ UPGMA"):
                 try:
                     gu = st.session_state.gt_pruned if st.session_state.gt_pruned is not None else st.session_state.gt_filt
                     su = st.session_state.snp_pruned if st.session_state.snp_pruned is not None else st.session_state.snp_filt
@@ -317,34 +295,28 @@ def main():
                     st.error(f"❌ {e}")
             if st.session_state.nj_result is not None:
                 r = st.session_state.nj_result
-                st.plotly_chart(plot_tree(r["Z"], r["pops"], r["support"], title="UPGMA", mid=st.session_state.nj_mid), use_container_width=True, key="phylo_tree")
+                st.plotly_chart(plot_tree(r["Z"], r["pops"], r["support"], title="UPGMA", mid=st.session_state.nj_mid), use_container_width=True)
 
     with TABS[7]:
         if st.session_state.gt_filt is not None:
             gu = st.session_state.gt_pruned if st.session_state.gt_pruned is not None else st.session_state.gt_filt
             su = st.session_state.snp_pruned if st.session_state.snp_pruned is not None else st.session_state.snp_filt
             lab = st.session_state.ind_filt["FID"].astype(str).values
-            if st.button("▶ FST SNP + Pairwise", key="fst_btn"):
+            if st.button("▶ FST Pairwise"):
                 try:
                     st.session_state.fst = fst_snp_wc(gu, lab)
-                    st.session_state.fst_snp_df = su.copy()
                     M, pops = fst_pairwise(gu, lab, use_wc84=True)
                     st.session_state.update({"fst_M": M, "fst_pops": pops})
                     st.success("✅")
                 except Exception as e:
                     st.error(f"❌ {e}")
-            if st.session_state.fst is not None:
-                sf = st.session_state.fst_snp_df
-                n = min(len(st.session_state.fst), len(sf))
-                dff = pd.DataFrame({"SNP": sf["SNP"].values[:n], "CHR": sf["CHR"].values[:n], "BP": sf["BP"].values[:n], "FST": st.session_state.fst[:n]})
-                st.plotly_chart(plot_manhattan(dff, yc="FST", title="FST"), use_container_width=True, key="sel_fst_manh")
-                if st.session_state.fst_M is not None:
-                    mdf = pd.DataFrame(st.session_state.fst_M, index=st.session_state.fst_pops, columns=st.session_state.fst_pops)
-                    st.plotly_chart(px.imshow(mdf.round(4), text_auto=True, color_continuous_scale="Reds"), use_container_width=True, key="fst_heat")
+            if st.session_state.fst_M is not None:
+                mdf = pd.DataFrame(st.session_state.fst_M, index=st.session_state.fst_pops, columns=st.session_state.fst_pops)
+                st.plotly_chart(px.imshow(mdf.round(4), text_auto=True, color_continuous_scale="Reds"), use_container_width=True)
 
     with TABS[8]:
-        pf = st.file_uploader("Phénotypes", type=["csv", "txt", "gz"], key="ph_up")
-        if pf and st.button("📥 Charger", key="ph_btn"):
+        pf = st.file_uploader("Phénotypes", type=["csv", "txt", "gz"])
+        if pf and st.button("📥 Charger"):
             try:
                 mg, _ = match_pheno(st.session_state.ind_filt, load_pheno(pf.read(), pf.name))
                 st.session_state.pheno_df = mg
@@ -354,7 +326,7 @@ def main():
         if st.session_state.pheno_df is not None:
             cols = [c for c in st.session_state.pheno_df.columns if c not in ("FID", "IID")]
             pc = st.selectbox("Phénotype", cols)
-            if st.button("🚀 Lancer GWAS", type="primary", key="gwas_btn"):
+            if st.button("🚀 Lancer GWAS"):
                 try:
                     gu = st.session_state.gt_pruned if st.session_state.gt_pruned is not None else st.session_state.gt_filt
                     su = st.session_state.snp_pruned if st.session_state.snp_pruned is not None else st.session_state.snp_filt
@@ -368,56 +340,11 @@ def main():
                 except Exception as e:
                     st.error(f"❌ {e}")
             if st.session_state.gwas_res is not None:
-                st.plotly_chart(plot_manhattan(st.session_state.gwas_res, yc="P", title="Manhattan"), use_container_width=True, key="gwas_manh")
+                st.plotly_chart(plot_manhattan(st.session_state.gwas_res, yc="P", title="Manhattan"), use_container_width=True)
 
     with TABS[9]:
-        if st.session_state.gwas_res is not None:
-            pip = fine_mapping(st.session_state.gwas_res)
-            st.plotly_chart(plot_pip(pip), use_container_width=True, key="pg_pip")
-
-    with TABS[10]:
-        if st.session_state.pheno_df is not None:
-            cols = [c for c in st.session_state.pheno_df.columns if c not in ("FID", "IID")]
-            pc = st.selectbox("Phénotype", cols, key="gb_pc")
-            if st.button("▶ GBLUP", key="gb_btn"):
-                try:
-                    gu = st.session_state.gt_pruned if st.session_state.gt_pruned is not None else st.session_state.gt_filt
-                    ph = pd.to_numeric(st.session_state.pheno_df[pc], errors="coerce")
-                    df, stats_ = run_gblup(gu, ph.values)
-                    st.session_state.gebv_df = df
-                    st.session_state.gblup_stats = stats_
-                    st.success(f"✅ h² = {stats_['h2']:.3f}")
-                except Exception as e:
-                    st.error(f"❌ {e}")
-
-    with TABS[11]:
-        st.info("Annotation GFF3 disponible ici.")
-    with TABS[12]:
-        st.info("VEP & NCBI disponibles ici.")
-    with TABS[13]:
-        st.info("Structure 3D disponible ici.")
-    with TABS[14]:
-        st.info("Alignement disponible ici.")
-    with TABS[15]:
-        st.info("Méta-analyse disponible ici.")
-    with TABS[16]:
-        st.info("Machine Learning disponible ici.")
-    with TABS[17]:
-        st.info("Haplotypes disponibles ici.")
-    with TABS[18]:
-        st.info("LiftOver disponible ici.")
-    
-    with TABS[19]:
         if st.session_state.gt_filt is not None:
-            gu = st.session_state.gt_pruned if st.session_state.gt_pruned is not None else st.session_state.gt_filt
-            su = st.session_state.snp_pruned if st.session_state.snp_pruned is not None else st.session_state.snp_filt
-            if st.button("📦 PLINK", use_container_width=True):
-                st.download_button("⬇ PLINK", build_plink(gu, st.session_state.ind_filt, su, cfg["prefix"]), f"{cfg['prefix']}.zip", "application/zip")
-
-    with TABS[20]:
-        st.subheader("📊 Métriques de Diversité par Population")
-        if st.session_state.gt_filt is not None:
-            if st.button("🧮 Calculer les métriques", key="div_btn"):
+            if st.button("🧮 Calculer les métriques"):
                 try:
                     gu = st.session_state.gt_pruned if st.session_state.gt_pruned is not None else st.session_state.gt_filt
                     labels = st.session_state.ind_filt["FID"].astype(str).values
