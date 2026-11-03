@@ -142,6 +142,8 @@ def main():
             try:
                 if meta_file.name.endswith(".xlsx"):
                     df_excel = pd.read_excel(meta_file, sheet_name="Sample_Details", header=0)
+                    
+                    # CORRECTION FINALE : Colonne 8 (I) = Nom du fichier, Colonne 17 (R) = Race
                     meta = df_excel.iloc[:, [8, 17]].copy()
                     meta.columns = ["Sample_Filename", "Breed"]
                     meta = meta.dropna(subset=["Sample_Filename"])
@@ -167,8 +169,10 @@ def main():
                 st.session_state.ind_df["FID"] = st.session_state.ind_df["Species"].fillna(st.session_state.ind_df["FID"])
                 
                 st.success("✅ Métadonnées liées avec succès !")
+                st.write("Répartition des espèces :")
                 st.write(st.session_state.ind_df["FID"].value_counts())
                 st.dataframe(st.session_state.ind_df[["IID", "FID"]].head(5))
+                
             except Exception as e:
                 st.error(f"❌ Erreur : {e}")
 
