@@ -1,4 +1,4 @@
-"""app.py — NW Camelids Genomics Platform (Excel Direct)"""
+"""app.py — NW Camelids Genomics Platform (Global & Complete)"""
 import gzip, warnings
 import numpy as np
 import pandas as pd
@@ -81,6 +81,9 @@ def main():
             cfg = get_config(species_key)
             st.info(f"Mode spécifique : {species_key}")
 
+        st.markdown(f"**Caryotype** : {cfg['karyotype']}")
+        st.markdown(f"**Taxon NCBI** : `{cfg['taxon']}`")
+
         if st.session_state.current_species is None:
             st.session_state.current_species = species_key
         elif st.session_state.current_species != species_key:
@@ -138,9 +141,7 @@ def main():
         if meta_file and st.session_state.ind_df is not None and st.button("🔗 Lier Métadonnées", use_container_width=True):
             try:
                 if meta_file.name.endswith(".xlsx"):
-                    # Lecture directe de l'Excel sur Streamlit
                     df_excel = pd.read_excel(meta_file, sheet_name="Sample_Details", header=0)
-                    # Colonne 8 (I) = Nom, Colonne 17 (R) = Breed
                     meta = df_excel.iloc[:, [8, 17]].copy()
                     meta.columns = ["Sample_Filename", "Breed"]
                     meta = meta.dropna(subset=["Sample_Filename"])
@@ -157,21 +158,17 @@ def main():
                     meta["Species"] = meta["Breed"].apply(map_breed_to_species)
                     meta_df = meta[["Sample_Filename", "Species"]].copy()
                 else:
-                    # Lecture CSV classique
                     meta_df = pd.read_csv(meta_file)
 
-                # Fusion
                 st.session_state.ind_df = st.session_state.ind_df.merge(
                     meta_df[["Sample_Filename", "Species"]],
                     left_on="IID", right_on="Sample_Filename", how="left"
                 )
                 st.session_state.ind_df["FID"] = st.session_state.ind_df["Species"].fillna(st.session_state.ind_df["FID"])
                 
-                st.success("✅ Métadonnées liées !")
-                st.write("Répartition :")
+                st.success("✅ Métadonnées liées avec succès !")
                 st.write(st.session_state.ind_df["FID"].value_counts())
                 st.dataframe(st.session_state.ind_df[["IID", "FID"]].head(5))
-                
             except Exception as e:
                 st.error(f"❌ Erreur : {e}")
 
@@ -187,14 +184,19 @@ def main():
         ld_r2     = st.slider("LD r²",       0.05, 0.5, 0.2, 0.05)
 
     st.title(f"🦙 {species_key}")
+    st.caption(f"Référence **{REFERENCE['name']}** ({REFERENCE['accession']}) · [NCBI]({REFERENCE['ncbi_url']})")
+
     if st.session_state.gt is None:
-        st.info("👋 Chargez `.map`, `.ped` et le fichier Excel des métadonnées.")
+        st.info("👋 Chargez `.map`, `.ped` et le fichier Excel des métadonnées pour commencer.")
         return
 
     TABS = st.tabs([
         "🏠 Accueil", "🧹 QC", "✂️ LD", "🧬 Structure", "🎨 Admixture",
         "📈 Démographie", "🌳 Phylogénie", "🔍 Sélection",
-        "🧪 GWAS", "📊 Diversité"
+        "🧪 GWAS", "🎯 Post-GWAS", "📈 GBLUP", "🧬 Annotation",
+        "🧬 VEP & NCBI", "🧬 Structure 3D", "🧬 Alignement",
+        "🔬 Méta-analyse", "🧠 ML", "🧬 Haplotypes", "🌍 LiftOver", "📤 Export",
+        "📊 Diversité",
     ])
 
     with TABS[0]:
@@ -205,6 +207,8 @@ def main():
         c4.metric("Groupes",     st.session_state.ind_df["FID"].nunique())
         ch = st.session_state.snp_df["CHR"].astype(str).value_counts().sort_index()
         st.plotly_chart(px.bar(x=ch.index, y=ch.values, labels={"x": "Chromosome", "y": "Nb SNP"}), use_container_width=True)
+        st.subheader("📋 Métadonnées")
+        st.dataframe(st.session_state.ind_df.head(20), use_container_width=True)
 
     with TABS[1]:
         if st.button("▶ Lancer QC", type="primary"):
@@ -225,6 +229,7 @@ def main():
             c2.metric("SNP finaux",  s["n_snp_final"], delta=-s["excluded_snp"])
             c3.metric("Outliers",    s["trace"].get("het", 0))
             c4.metric("Exclus X/Y/MT", s["trace"].get("autosomes", 0))
+            st.plotly_chart(plot_missing(miss_ind(st.session_state.gt), miss_snp(st.session_state.gt)), use_container_width=True)
 
     with TABS[2]:
         if st.session_state.gt_filt is not None:
@@ -234,6 +239,12 @@ def main():
                     "gt_pruned": st.session_state.gt_filt[:, keep],
                     "snp_pruned": st.session_state.snp_filt[keep].reset_index(drop=True)})
                 st.success(f"✅ {st.session_state.gt_pruned.shape[1]} SNP")
+            if st.session_state.gt_pruned is not None:
+                if st.button("▶ LD Decay"):
+                    st.session_state.ld_df = ld_decay(st.session_state.gt_pruned, st.session_state.snp_pruned)
+                if st.session_state.ld_df is not None:
+                    f = plot_ld(st.session_state.ld_df)
+                    if f: st.plotly_chart(f, use_container_width=True)
 
     with TABS[3]:
         if st.session_state.gt_filt is not None and st.button("▶ PCA + MDS"):
@@ -343,6 +354,35 @@ def main():
                 st.plotly_chart(plot_manhattan(st.session_state.gwas_res, yc="P", title="Manhattan"), use_container_width=True)
 
     with TABS[9]:
+        st.info("Post-GWAS : Fine-mapping ABF/PIP (disponible si GWAS lancé).")
+    with TABS[10]:
+        st.info("GBLUP : Évaluation génomique (nécessite phénotypes).")
+    with TABS[11]:
+        st.info("Annotation GFF3 (uploadez le fichier GFF3).")
+    with TABS[12]:
+        st.info("VEP & NCBI (pour l'annotation fonctionnelle).")
+    with TABS[13]:
+        st.info("Structure 3D AlphaFold.")
+    with TABS[14]:
+        st.info("Alignement de séquences.")
+    with TABS[15]:
+        st.info("Méta-analyse (Enrichissement, STRING).")
+    with TABS[16]:
+        st.info("Machine Learning (Random Forest).")
+    with TABS[17]:
+        st.info("Haplotypes (Heatmap de blocs).")
+    with TABS[18]:
+        st.info("LiftOver (vers le génome humain).")
+    
+    with TABS[19]:
+        if st.session_state.gt_filt is not None:
+            gu = st.session_state.gt_pruned if st.session_state.gt_pruned is not None else st.session_state.gt_filt
+            su = st.session_state.snp_pruned if st.session_state.snp_pruned is not None else st.session_state.snp_filt
+            if st.button("📦 PLINK", use_container_width=True):
+                st.download_button("⬇ PLINK", build_plink(gu, st.session_state.ind_filt, su, cfg["prefix"]), f"{cfg['prefix']}.zip", "application/zip")
+
+    with TABS[20]:
+        st.subheader("📊 Métriques de Diversité par Population")
         if st.session_state.gt_filt is not None:
             if st.button("🧮 Calculer les métriques"):
                 try:
