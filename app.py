@@ -113,7 +113,10 @@ def main():
         f_map = st.file_uploader(".map", type=["map", "gz"], key="map_up")
         if f_map and st.button("📥 Charger .map", use_container_width=True):
             try:
-                st.session_state.snp_df = load_map_uploaded(f_map.read(), f_map.name)
+                snp_df = load_map_uploaded(f_map.read(), f_map.name)
+                # CORRECTION : Forcer le chromosome à être du texte pour éviter le "1.0" et l'axe "0"
+                snp_df['CHR'] = snp_df['CHR'].astype(str).str.replace(r'\.0$', '', regex=True)
+                st.session_state.snp_df = snp_df
                 st.success(f"✅ {len(st.session_state.snp_df):,} SNP")
             except Exception as e:
                 st.error(f"❌ {e}")
@@ -154,7 +157,7 @@ def main():
                     st.error(f"❌ {e}")
 
         # ============================================================
-        # METADONNEES + DIAGNOSTIC + CORRECTION COLONNE BREED
+        # METADONNEES + EXTRACTION PAR CODE (CORRIGÉ)
         # ============================================================
         st.divider()
         st.header("📋 2.5 Métadonnées (Espèces)")
@@ -163,55 +166,71 @@ def main():
         if meta_file and st.session_state.ind_df_pays is not None:
             try:
                 if meta_file.name.endswith(".xlsx"):
-                    df_excel = pd.read_excel(meta_file, sheet_name="Sample_Details", header=0)
-                    df_excel = df_excel.ffill()
-                    
-                    # CORRECTION : On force la lecture des colonnes 8 (Nom) et 17 (Breed exact)
-                    # On ne cherche plus par mot clé pour éviter l'erreur "Breed_Code"
-                    meta = df_excel.iloc[:, [8, 17]].copy()
-                    meta.columns = ["Sample_Filename", "Breed"]
-                    meta = meta.dropna(subset=["Sample_Filename"])
-                    meta = meta[meta["Sample_Filename"].astype(str).str.contains(".CEL", na=False)]
+                    df_excel = pd.read_excel(meta_file)
                 else:
-                    meta = pd.read_csv(meta_file)
-                    if "Breed" not in meta.columns:
-                        meta.columns = ["Sample_Filename", "Breed"]
+                    df_excel = pd.read_csv(meta_file)
+                
+                # On récupère la 1ère colonne qui contient les noms (ex: ARG_ALG_ARG01_A1...)
+                id_col = df_excel.columns[0]
+                df_excel['ID_Clean'] = df_excel[id_col].astype(str).str.strip().str.upper().str.replace('.CEL', '', regex=False)
+                
+                # On extrait le code pays (ARG) et le code espèce (ALG)
+                df_excel['Code_Pays'] = df_excel['ID_Clean'].str.split('_').str[0]
+                df_excel['Code_Espece'] = df_excel['ID_Clean'].str.split('_').str[1]
+                
+                # Dictionnaires de traduction
+                dict_especes = {
+                    'ALG': 'Alpaga', 'PAH': 'Alpaga', 'BAH': 'Alpaga', 'PAS': 'Alpaga', 'BAS': 'Alpaga',
+                    'BLL': 'Lama', 'ALL': 'Lama', 'ULP': 'Lama',
+                    'BVM': 'Vigogne', 'AVS': 'Vigogne', 'UVV': 'Vigogne', 'BVV': 'Vigogne', 'BVS': 'Vigogne',
+                    'CLG': 'Guanaco'
+                }
+                dict_pays = {'ARG': 'Argentine', 'BOL': 'Bolivie', 'PER': 'Pérou', 'USA': 'USA', 'CHL': 'Chili'}
+                
+                df_excel['Espece_Propre'] = df_excel['Code_Espece'].map(dict_especes).fillna('Autre')
+                df_excel['Pays_Propre'] = df_excel['Code_Pays'].map(dict_pays).fillna('Autre')
+                
+                meta = df_excel[['ID_Clean', 'Espece_Propre', 'Pays_Propre']].copy()
+                meta = meta.drop_duplicates(subset=['ID_Clean'])
 
                 # --- DIAGNOSTIC ---
                 with st.expander("🔍 Voir le diagnostic des IDs", expanded=False):
                     iid_ped = st.session_state.ind_df_pays["IID"].astype(str).str.replace(".CEL", "", regex=False).str.strip().str.upper()
-                    iid_excel = meta["Sample_Filename"].astype(str).str.replace(".CEL", "", regex=False).str.strip().str.upper()
+                    iid_excel = meta["ID_Clean"].astype(str)
                     match_exact = len(set(iid_ped).intersection(set(iid_excel)))
                     st.write(f"**Correspondances exactes : {match_exact} / {len(iid_ped)}**")
 
                 if st.button("🔗 Lier Métadonnées", use_container_width=True):
                     ind_pays = st.session_state.ind_df_pays.copy()
                     ind_pays["IID_clean"] = ind_pays["IID"].astype(str).str.replace(".CEL", "", regex=False).str.strip().str.upper()
-                    meta["Sample_Filename"] = meta["Sample_Filename"].astype(str).str.replace(".CEL", "", regex=False).str.strip().str.upper()
                     
-                    ind_species = ind_pays.merge(meta[["Sample_Filename", "Breed"]], left_on="IID_clean", right_on="Sample_Filename", how="left")
+                    # how='left' garantit qu'on garde EXACTEMENT 374 animaux
+                    ind_merged = ind_pays.merge(meta[['ID_Clean', 'Espece_Propre', 'Pays_Propre']], left_on="IID_clean", right_on="ID_Clean", how="left")
 
-                    def map_breed_to_species(breed):
-                        b = str(breed).upper()
-                        # On regarde le nom complet de la race
-                        if "HUACAYA" in b or "SURI" in b or "ALPACA" in b: return "Alpaga"
-                        if "GUANACO" in b: return "Guanaco"
-                        if "LLAMA" in b: return "Lama"
-                        if "V.MENSALIS" in b or "MENSALIS" in b: return "Vigogne (mensalis)"
-                        if "V.VICUGNA" in b or "VICUGNA VICUGNA" in b: return "Vigogne (vicugna)"
-                        if "VICUGNA" in b or "V.SP" in b: return "Vigogne (sp.)"
-                        return "Autre"
+                    ind_merged["Espece_Propre"] = ind_merged["Espece_Propre"].fillna("Autre")
+                    ind_merged["Pays_Propre"] = ind_merged["Pays_Propre"].fillna("Autre")
 
-                    ind_species["Species"] = ind_species["Breed"].apply(map_breed_to_species)
-                    ind_species["FID"] = ind_species["Species"].fillna(ind_species["FID"])
-                    ind_species = ind_species.drop(columns=["Species", "Sample_Filename", "IID_clean", "Breed"], errors="ignore")
+                    # Mise à jour du groupe (FID) selon l'espèce
+                    ind_species = ind_merged.copy()
+                    ind_species["FID"] = ind_species["Espece_Propre"]
+                    
+                    # Mise à jour du groupe (FID) selon le pays
+                    ind_pays_out = ind_merged.copy()
+                    ind_pays_out["FID"] = ind_pays_out["Pays_Propre"]
 
                     st.session_state.ind_df_species = ind_species
+                    st.session_state.ind_df_pays = ind_pays_out
+                    
                     if grouping_mode.startswith("🦙"):
                         st.session_state.ind_df = ind_species.copy()
+                    else:
+                        st.session_state.ind_df = ind_pays_out.copy()
 
                     st.success("✅ Métadonnées liées !")
-                    st.write(ind_species["FID"].value_counts())
+                    st.write("**Répartition par Espèce :**")
+                    st.write(ind_species["Espece_Propre"].value_counts())
+                    st.write("**Répartition par Pays :**")
+                    st.write(ind_pays_out["Pays_Propre"].value_counts())
             except Exception as e:
                 st.error(f"❌ Erreur : {e}")
 
@@ -257,8 +276,13 @@ def main():
         c2.metric("SNP",         st.session_state.gt.shape[1])
         c3.metric("Chromosomes", st.session_state.snp_df["CHR"].nunique())
         c4.metric("Groupes",     st.session_state.ind_df["FID"].nunique())
+        
+        # CORRECTION : Affichage propre du graphique des chromosomes
         ch = st.session_state.snp_df["CHR"].astype(str).value_counts().sort_index()
-        st.plotly_chart(px.bar(x=ch.index, y=ch.values, labels={"x": "Chromosome", "y": "Nb SNP"}), use_container_width=True)
+        fig_ch = px.bar(x=ch.index, y=ch.values, labels={"x": "Chromosome", "y": "Nb SNP"}, title="Nombre de SNP par chromosome")
+        fig_ch.update_xaxes(type='category') # Force l'axe X à être catégoriel (1, 2, 3...)
+        st.plotly_chart(fig_ch, use_container_width=True)
+        
         st.subheader(f"📋 Répartition par {current_mode}")
         st.dataframe(st.session_state.ind_df["FID"].value_counts().reset_index(), use_container_width=True)
 
