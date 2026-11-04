@@ -114,16 +114,19 @@ def main():
         f_map = st.file_uploader(".map", type=["map", "gz"], key="map_up")
         if f_map and st.button("📥 Charger .map", use_container_width=True):
             try:
-                # Lecture directe et robuste du fichier .map
+                # Lecture robuste qui ignore les lignes de commentaires (#)
                 raw_bytes = f_map.read()
                 if f_map.name.endswith(".gz"):
                     raw_bytes = gzip.decompress(raw_bytes)
                 
-                map_df = pd.read_csv(io.BytesIO(raw_bytes), sep=r'\s+', header=None, names=['CHR', 'SNP', 'CM', 'BP'])
+                raw_text = raw_bytes.decode('utf-8', errors='ignore')
+                clean_lines = [line for line in raw_text.splitlines() if not line.startswith('#') and line.strip()]
+                
+                map_df = pd.read_csv(io.StringIO('\n'.join(clean_lines)), sep=r'\s+', header=None, names=['CHR', 'SNP', 'CM', 'BP'])
                 map_df['CHR'] = map_df['CHR'].astype(str).str.replace(r'\.0$', '', regex=True)
                 
                 st.session_state.snp_df = map_df
-                st.success(f"✅ {len(st.session_state.snp_df):,} SNP")
+                st.success(f"✅ {len(st.session_state.snp_df):,} SNP chargés sur {map_df['CHR'].nunique()} chromosomes")
             except Exception as e:
                 st.error(f"❌ {e}")
 
@@ -162,9 +165,6 @@ def main():
                 except Exception as e:
                     st.error(f"❌ {e}")
 
-        # ============================================================
-        # METADONNEES + EXTRACTION PAR CODE + FILTRAGE PAR ESPECE
-        # ============================================================
         st.divider()
         st.header("📋 2.5 Métadonnées (Espèces)")
         meta_file = st.file_uploader("NWC_Meta_Sample_Details_Suheil.xlsx", type=["xlsx", "csv"], key="meta_up")
@@ -220,9 +220,6 @@ def main():
                     st.session_state.ind_df_species = ind_species
                     st.session_state.ind_df_pays = ind_pays_out
                     
-                    # ========================================================
-                    # FILTRAGE AUTOMATIQUE PAR ESPECE (Si mode spécifique)
-                    # ========================================================
                     if species_key != "🌍 Toutes les espèces (Global)":
                         espece_cible = None
                         if "Alpaga" in species_key: espece_cible = "Alpaga"
@@ -235,14 +232,12 @@ def main():
                             n_isolated = mask.sum()
                             
                             if n_isolated > 0:
-                                # Filtrage strict des génotypes et des métadonnées pour cette espèce
                                 st.session_state.gt = st.session_state.gt[mask.values, :]
                                 st.session_state.ind_df = ind_species[mask].copy()
                                 st.success(f"🔬 **Mode Espèce** : Analyse isolée de {n_isolated} individus ({espece_cible}).")
                             else:
                                 st.error(f"❌ Aucun animal trouvé pour {espece_cible}.")
                     else:
-                        # Mode Global : on garde tout le monde
                         if grouping_mode.startswith("🦙"):
                             st.session_state.ind_df = ind_species.copy()
                         else:
@@ -251,8 +246,6 @@ def main():
                     st.success("✅ Métadonnées liées !")
                     st.write("**Répartition par Espèce :**")
                     st.write(ind_species["Espece_Propre"].value_counts())
-                    st.write("**Répartition par Pays :**")
-                    st.write(ind_pays_out["Pays_Propre"].value_counts())
             except Exception as e:
                 st.error(f"❌ Erreur : {e}")
 
@@ -267,9 +260,6 @@ def main():
         het_sd    = st.slider("Het ±σ",     1.0, 5.0, 3.0, 0.1)
         ld_r2     = st.slider("LD r²",       0.05, 0.5, 0.2, 0.05)
 
-    # ============================================================
-    # PAGE PRINCIPALE
-    # ============================================================
     current_mode = st.session_state.grouping_mode or "🌍 Par Pays"
     st.title(f"🦙 {species_key}")
     st.caption(f"Référence **{REFERENCE['name']}** · Groupement : **{current_mode}**")
@@ -291,7 +281,6 @@ def main():
         "📊 Diversité",
     ])
 
-    # --- 0 ACCUEIL ---
     with TABS[0]:
         c1, c2, c3, c4 = st.columns(4)
         c1.metric("Individus",   st.session_state.gt.shape[0])
@@ -299,7 +288,6 @@ def main():
         c3.metric("Chromosomes", st.session_state.snp_df["CHR"].nunique())
         c4.metric("Groupes",     st.session_state.ind_df["FID"].nunique())
         
-        # Tri naturel des chromosomes (1, 2, 3... au lieu de 1, 10, 2)
         ch = st.session_state.snp_df["CHR"].astype(str).value_counts()
         ch = ch.reindex(sorted(ch.index, key=lambda x: (len(x), x)))
         
@@ -310,7 +298,6 @@ def main():
         st.subheader(f"📋 Répartition par {current_mode}")
         st.dataframe(st.session_state.ind_df["FID"].value_counts().reset_index(), use_container_width=True)
 
-    # --- 1 QC ---
     with TABS[1]:
         if st.button("▶ Lancer QC", type="primary", key="qc_btn"):
             try:
@@ -328,7 +315,6 @@ def main():
             c3.metric("Outliers",    s["trace"].get("het", 0))
             c4.metric("Exclus X/Y/MT", s["trace"].get("autosomes", 0))
 
-    # --- 2 LD ---
     with TABS[2]:
         if st.session_state.gt_filt is not None:
             if st.button("▶ LD Pruning", key="ld_btn"):
@@ -341,7 +327,6 @@ def main():
                 if st.session_state.ld_df is not None:
                     st.plotly_chart(plot_ld(st.session_state.ld_df), use_container_width=True)
 
-    # --- 3 STRUCTURE ---
     with TABS[3]:
         if st.session_state.gt_filt is not None and st.button("▶ PCA + MDS", key="struct_btn"):
             try:
@@ -357,7 +342,6 @@ def main():
             st.plotly_chart(plot_pca(st.session_state.pca_s, st.session_state.pca_v, st.session_state.ind_filt["FID"].values), use_container_width=True)
             st.plotly_chart(plot_mds(st.session_state.mds_c, st.session_state.ind_filt["FID"].values), use_container_width=True)
 
-    # --- 4 ADMIXTURE ---
     with TABS[4]:
         if st.session_state.gt_filt is not None:
             K = st.slider("K choisi", 2, 10, 4)
@@ -373,7 +357,6 @@ def main():
                 f, _ = plot_admix(st.session_state.admix_Q, st.session_state.ind_filt["IID"].values, st.session_state.ind_filt["FID"].values, st.session_state.admix_K)
                 st.plotly_chart(f, use_container_width=True)
 
-    # --- 5 DÉMOGRAPHIE ---
     with TABS[5]:
         if st.session_state.gt_filt is not None:
             if st.button("▶ ROH + Ne", key="dem_btn"):
@@ -389,7 +372,6 @@ def main():
                 df_f = pd.DataFrame({"FROH": st.session_state.froh, "Pop": st.session_state.ind_filt["FID"].values})
                 st.plotly_chart(px.histogram(df_f, x="FROH", color="Pop", nbins=50), use_container_width=True)
 
-    # --- 6 PHYLOGÉNIE ---
     with TABS[6]:
         if st.session_state.gt_filt is not None:
             if st.button("▶ UPGMA", key="phylo_btn"):
@@ -407,7 +389,6 @@ def main():
                 r = st.session_state.nj_result
                 st.plotly_chart(plot_tree(r["Z"], r["pops"], r["support"], title="UPGMA", mid=st.session_state.nj_mid), use_container_width=True)
 
-    # --- 7 SÉLECTION ---
     with TABS[7]:
         if st.session_state.gt_filt is not None:
             gu = st.session_state.gt_pruned if st.session_state.gt_pruned is not None else st.session_state.gt_filt
@@ -427,9 +408,20 @@ def main():
             st.divider()
             st.subheader("FST Fenêtré")
             if st.button("▶ Scan FST fenêtré", key="wf_btn"):
-                w = windowed_fst(gu, su, lab, 50, 25)
-                st.session_state.win_fst = detect_outliers(w, 3.0)
-                st.success(f"✅ {len(w)} fenêtres")
+                try:
+                    w = windowed_fst(gu, su, lab, 50, 25)
+                    # CORRECTION DU BUG MEAN_FST
+                    if "MEAN_FST" not in w.columns:
+                        fst_cols = [c for c in w.columns if "FST" in c.upper()]
+                        if fst_cols:
+                            w = w.rename(columns={fst_cols[0]: "MEAN_FST"})
+                        else:
+                            w["MEAN_FST"] = 0.0
+                    
+                    st.session_state.win_fst = detect_outliers(w, 3.0)
+                    st.success(f"✅ {len(w)} fenêtres")
+                except Exception as e:
+                    st.error(f"❌ {e}")
             if st.session_state.win_fst is not None:
                 st.plotly_chart(plot_win_manh(st.session_state.win_fst, "MEAN_FST", "FST fenêtré"), use_container_width=True)
             st.divider()
@@ -440,7 +432,6 @@ def main():
             if st.session_state.css_df is not None:
                 st.dataframe(st.session_state.css_df.head(20), use_container_width=True)
 
-    # --- 8 GWAS ---
     with TABS[8]:
         pf = st.file_uploader("Phénotypes", type=["csv", "txt", "gz"], key="ph_up")
         if pf and st.button("📥 Charger", key="ph_btn"):
@@ -469,14 +460,12 @@ def main():
             if st.session_state.gwas_res is not None:
                 st.plotly_chart(plot_manhattan(st.session_state.gwas_res, yc="P", title="Manhattan"), use_container_width=True)
 
-    # --- 9 POST-GWAS ---
     with TABS[9]:
         if st.session_state.gwas_res is not None:
             pip = fine_mapping(st.session_state.gwas_res)
             st.plotly_chart(plot_pip(pip), use_container_width=True)
             st.dataframe(pip[["SNP", "CHR", "BP", "P", "PIP"]].head(30), use_container_width=True)
 
-    # --- 10 GBLUP ---
     with TABS[10]:
         if st.session_state.pheno_df is not None:
             cols = [c for c in st.session_state.pheno_df.columns if c not in ("FID", "IID")]
@@ -492,7 +481,6 @@ def main():
                 except Exception as e:
                     st.error(f"❌ {e}")
 
-    # --- 11 ANNOTATION ---
     with TABS[11]:
         gff_f = st.file_uploader("GFF3/GTF", type=["gff", "gff3", "gtf", "gz"], key="ann_gff")
         src = st.radio("Source", ["Sélection", "GWAS"], horizontal=True)
@@ -515,7 +503,6 @@ def main():
             except Exception as e:
                 st.error(f"❌ {e}")
 
-    # --- 12 VEP & NCBI ---
     with TABS[12]:
         snp_list = []
         if st.session_state.gwas_res is not None:
@@ -542,7 +529,6 @@ def main():
         if st.session_state.vep_res is not None:
             st.dataframe(st.session_state.vep_res, use_container_width=True)
 
-    # --- 13 STRUCTURE 3D ---
     with TABS[13]:
         genes = []
         if st.session_state.vep_res is not None:
@@ -557,11 +543,9 @@ def main():
                     else: st.error("Structure introuvable.")
                 else: st.error("Gène non trouvé.")
 
-    # --- 14 ALIGNEMENT ---
     with TABS[14]:
         st.info("Alignement disponible via les résultats GWAS/Sélection.")
 
-    # --- 15 MÉTA-ANALYSE ---
     with TABS[15]:
         genes = []
         if st.session_state.vep_res is not None:
@@ -571,7 +555,6 @@ def main():
             if not enr.empty:
                 st.dataframe(enr.head(30), use_container_width=True)
 
-    # --- 16 ML ---
     with TABS[16]:
         if st.session_state.pheno_df is not None:
             from sklearn.ensemble import RandomForestRegressor
@@ -592,7 +575,6 @@ def main():
                     r2 = r2_score(yte, rf.predict(Xte))
                     st.success(f"✅ R² = {r2:.3f}")
 
-    # --- 17 HAPLOTYPES ---
     with TABS[17]:
         if st.session_state.gt_filt is not None:
             gu = st.session_state.gt_pruned if st.session_state.gt_pruned is not None else st.session_state.gt_filt
@@ -610,7 +592,6 @@ def main():
                 fig = px.imshow(gt_sub[sort_idx], labels=dict(x="SNP", y="Individu", color="Génotype"), x=snps_names, y=groups[sort_idx], color_continuous_scale=["#F0F0F0", "#3498db", "#e74c3c"], title=f"Haplotypes CHR{sel_chr}", aspect="auto")
                 st.plotly_chart(fig, use_container_width=True)
 
-    # --- 18 LIFTOVER ---
     with TABS[18]:
         if st.session_state.snp_filt is not None:
             su = st.session_state.snp_pruned if st.session_state.snp_pruned is not None else st.session_state.snp_filt
@@ -621,7 +602,6 @@ def main():
                 if hc: st.success(f"✅ Homme : chr{hc}:{hb}")
                 else: st.error("Aucune correspondance.")
 
-    # --- 19 EXPORT ---
     with TABS[19]:
         if st.session_state.gt_filt is not None:
             gu = st.session_state.gt_pruned if st.session_state.gt_pruned is not None else st.session_state.gt_filt
@@ -631,7 +611,6 @@ def main():
             if st.button("📄 VCF", use_container_width=True):
                 st.download_button("⬇ VCF", build_vcf(gu, st.session_state.ind_filt, su, cfg["prefix"]).encode(), f"{cfg['prefix']}.vcf", "text/plain")
 
-    # --- 20 DIVERSITÉ ---
     with TABS[20]:
         st.subheader(f"📊 Métriques de Diversité — {current_mode}")
         if st.session_state.gt_filt is not None:
