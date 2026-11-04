@@ -1,4 +1,4 @@
-"""app.py — NW Camelids Genomics Platform (Version Finale Sans Bug + Filtrage Espèce)"""
+"""app.py — NW Camelids Genomics Platform (Version Finale Complète)"""
 import gzip, warnings
 import numpy as np
 import pandas as pd
@@ -52,6 +52,7 @@ def load_map_uploaded(file_bytes: bytes, fname: str) -> pd.DataFrame:
 
 @st.cache_data(show_spinner=False)
 def compute_diversity_metrics(gt, labels):
+    labels = np.array(labels)
     pops = np.unique(labels)
     results = []
     for p in pops:
@@ -114,19 +115,27 @@ def main():
         f_map = st.file_uploader(".map", type=["map", "gz"], key="map_up")
         if f_map and st.button("📥 Charger .map", use_container_width=True):
             try:
-                # Lecture robuste qui ignore les lignes de commentaires (#)
                 raw_bytes = f_map.read()
                 if f_map.name.endswith(".gz"):
                     raw_bytes = gzip.decompress(raw_bytes)
                 
                 raw_text = raw_bytes.decode('utf-8', errors='ignore')
-                clean_lines = [line for line in raw_text.splitlines() if not line.startswith('#') and line.strip()]
+                data = []
+                for line in raw_text.splitlines():
+                    line = line.strip()
+                    if not line or line.startswith('#'):
+                        continue
+                    parts = line.split()
+                    if len(parts) >= 4:
+                        data.append(parts[:4])
                 
-                map_df = pd.read_csv(io.StringIO('\n'.join(clean_lines)), sep=r'\s+', header=None, names=['CHR', 'SNP', 'CM', 'BP'])
-                map_df['CHR'] = map_df['CHR'].astype(str).str.replace(r'\.0$', '', regex=True)
-                
-                st.session_state.snp_df = map_df
-                st.success(f"✅ {len(st.session_state.snp_df):,} SNP chargés sur {map_df['CHR'].nunique()} chromosomes")
+                if len(data) > 0:
+                    map_df = pd.DataFrame(data, columns=['CHR', 'SNP', 'CM', 'BP'])
+                    map_df['CHR'] = map_df['CHR'].astype(str).str.replace(r'\.0$', '', regex=True)
+                    st.session_state.snp_df = map_df
+                    st.success(f"✅ {len(map_df):,} SNP chargés sur {map_df['CHR'].nunique()} chromosomes")
+                else:
+                    st.error("❌ Aucune donnée valide trouvée dans le fichier.")
             except Exception as e:
                 st.error(f"❌ {e}")
 
@@ -278,7 +287,7 @@ def main():
         "🧪 GWAS", "🎯 Post-GWAS", "📈 GBLUP", "🧬 Annotation",
         "🧬 VEP & NCBI", "🧬 Structure 3D", "🧬 Alignement",
         "🔬 Méta-analyse", "🧠 ML", "🧬 Haplotypes", "🌍 LiftOver", "📤 Export",
-        "📊 Diversité",
+        "📊 Diversité", "⚖️ Comparaison 2 à 2", "🧬 Blocs de LD", "📊 Métriques comparatives"
     ])
 
     with TABS[0]:
@@ -410,7 +419,6 @@ def main():
             if st.button("▶ Scan FST fenêtré", key="wf_btn"):
                 try:
                     w = windowed_fst(gu, su, lab, 50, 25)
-                    # CORRECTION DU BUG MEAN_FST
                     if "MEAN_FST" not in w.columns:
                         fst_cols = [c for c in w.columns if "FST" in c.upper()]
                         if fst_cols:
@@ -624,6 +632,116 @@ def main():
                     df_div["FROH"] = df_div["FROH"].round(4)
                 st.dataframe(df_div, use_container_width=True)
                 st.download_button("⬇ Télécharger", df_div.to_csv(index=False).encode(), "diversity_metrics.csv", "text/csv")
+
+    # --- 21 COMPARAISON 2 A 2 ---
+    with TABS[21]:
+        st.subheader("⚖️ Comparaison directe entre deux groupes")
+        if st.session_state.gt_filt is not None:
+            pops = st.session_state.ind_filt["FID"].unique().tolist()
+            if len(pops) >= 2:
+                col1, col2 = st.columns(2)
+                pop1 = col1.selectbox("Groupe 1", pops, index=0)
+                pop2 = col2.selectbox("Groupe 2", pops, index=1 if len(pops)>1 else 0)
+                
+                if st.button("🔬 Lancer la comparaison"):
+                    gu = st.session_state.gt_pruned if st.session_state.gt_pruned is not None else st.session_state.gt_filt
+                    su = st.session_state.snp_pruned if st.session_state.snp_pruned is not None else st.session_state.snp_filt
+                    labs = st.session_state.ind_filt["FID"].astype(str).values
+                    
+                    m1 = (labs == pop1)
+                    m2 = (labs == pop2)
+                    
+                    if m1.sum() > 0 and m2.sum() > 0:
+                        # 1. Calcul du FST
+                        sub_gt = gu[m1 | m2]
+                        sub_lab = labs[m1 | m2]
+                        fst_m, _ = fst_pairwise(sub_gt, sub_lab)
+                        # La matrice FST est 2x2, l'indice [0,1] contient la valeur entre les 2 pops
+                        st.metric(f"FST entre {pop1} et {pop2}", f"{fst_m[0,1]:.4f}")
+                        
+                        # 2. Allèles fixés différemment (Fst = 1)
+                        g1 = gu[m1]; g2 = gu[m2]
+                        p1 = np.nanmean(g1, axis=0) / 2.0
+                        p2 = np.nanmean(g2, axis=0) / 2.0
+                        
+                        fixed_diff = ((p1 >= 0.99) & (p2 <= 0.01)) | ((p1 <= 0.01) & (p2 >= 0.99))
+                        n_fixed = np.sum(fixed_diff)
+                        
+                        st.write(f"**Allèles fixés différemment** : {n_fixed} SNP")
+                        if n_fixed > 0:
+                            df_fixed = su[fixed_diff].copy()
+                            df_fixed["Freq_" + pop1] = p1[fixed_diff]
+                            df_fixed["Freq_" + pop2] = p2[fixed_diff]
+                            st.dataframe(df_fixed[["CHR", "SNP", "BP", "Freq_"+pop1, "Freq_"+pop2]], use_container_width=True)
+                    else:
+                        st.error("Un des groupes n'a pas d'individus.")
+            else:
+                st.warning("Vous devez être en mode Global (toutes les espèces) pour comparer 2 groupes.")
+
+    # --- 22 BLOCS DE LD (HEATMAP) ---
+    with TABS[22]:
+        st.subheader("🧬 Carte de chaleur du Déséquilibre de Liaison (LD)")
+        if st.session_state.gt_filt is not None:
+            gu = st.session_state.gt_pruned if st.session_state.gt_pruned is not None else st.session_state.gt_filt
+            su = st.session_state.snp_pruned if st.session_state.snp_pruned is not None else st.session_state.snp_filt
+            
+            chroms = sorted(su["CHR"].astype(str).unique())
+            sel_chr = st.selectbox("Choisir un chromosome", chroms, key="ld_chr")
+            
+            idx_chr = su[su["CHR"].astype(str) == sel_chr].index
+            if len(idx_chr) > 100:
+                idx_chr = idx_chr[:100] 
+                
+            if len(idx_chr) > 1:
+                gt_chr = gu[:, idx_chr]
+                X = np.nan_to_num(gt_chr, nan=np.nanmean(gt_chr, axis=0))
+                
+                # Supprimer les colonnes constantes pour éviter les warnings de corrélation
+                valid_cols = X.std(axis=0) > 1e-9
+                X_val = X[:, valid_cols]
+                if X_val.shape[1] > 1:
+                    with np.errstate(divide='ignore', invalid='ignore'):
+                        corr_matrix = np.corrcoef(X_val.T) ** 2
+                    
+                    fig = px.imshow(corr_matrix, 
+                                    color_continuous_scale="Reds", 
+                                    labels=dict(color="r²"),
+                                    title=f"Blocs de LD - Chromosome {sel_chr} ({len(idx_chr)} SNP)")
+                    st.plotly_chart(fig, use_container_width=True)
+                else:
+                    st.info("Pas assez de SNPs variables sur ce chromosome.")
+            else:
+                st.info("Pas assez de SNP sur ce chromosome pour afficher un bloc.")
+
+    # --- 23 METRIQUES COMPARATIVES ---
+    with TABS[23]:
+        st.subheader("📊 Tableau comparatif des races/espèces")
+        if st.session_state.gt_filt is not None:
+            if st.button("Générer le tableau comparatif"):
+                gu = st.session_state.gt_pruned if st.session_state.gt_pruned is not None else st.session_state.gt_filt
+                labs = st.session_state.ind_filt["FID"].astype(str).values
+                pops = np.unique(labs)
+                
+                results = []
+                for p in pops:
+                    mask = labs == p
+                    sub_gt = gu[mask]
+                    if sub_gt.shape[0] == 0: continue
+                    
+                    ho = np.nanmean(np.nanmean(sub_gt == 1, axis=0))
+                    p_freq = np.nanmean(sub_gt, axis=0) / 2.0
+                    maf = np.nanmean(np.minimum(p_freq, 1 - p_freq))
+                    
+                    results.append({
+                        "Population": p,
+                        "N": sub_gt.shape[0],
+                        "Ho (Hétérozygotie)": round(float(ho), 4),
+                        "MAF moyen": round(float(maf), 4)
+                    })
+                
+                df_res = pd.DataFrame(results)
+                st.dataframe(df_res, use_container_width=True)
+                st.download_button("⬇ Télécharger (CSV)", df_res.to_csv(index=False).encode(), "comparaison_races.csv", "text/csv")
 
 if __name__ == "__main__":
     main()
