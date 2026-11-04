@@ -1,4 +1,4 @@
-"""app.py — NW Camelids Genomics Platform (Dual Mode + 21 onglets complets)"""
+"""app.py — NW Camelids Genomics Platform (Version Définitive)"""
 import gzip, warnings
 import numpy as np
 import pandas as pd
@@ -78,7 +78,7 @@ def main():
             cfg = get_config("🦙 Alpaga (Vicugna pacos)")
             cfg["prefix"] = "nwc_global"
             cfg["autosomes"] = [str(i) for i in range(1, 39)]
-            st.info("🌍 Mode Global : Analyse des 374 individus.")
+            st.info("🌍 Mode Global")
         else:
             cfg = get_config(species_key)
             st.info(f"Mode spécifique : {species_key}")
@@ -94,16 +94,12 @@ def main():
             st.session_state.gt = st.session_state.ind_df = st.session_state.snp_df = None
             st.warning("🔄 Mode changé — réinitialisé.")
 
-        # ============================================================
-        # SÉLECTEUR : PAYS vs ESPÈCE
-        # ============================================================
         st.divider()
         st.header("🎯 Mode de regroupement")
         grouping_mode = st.radio(
             "Regrouper les analyses par :",
             ["🌍 Par Pays (ARG, BOL, PER, USA)", "🦙 Par Espèce (Alpaga, Guanaco, ...)"],
             index=0,
-            help="Basculez entre les deux niveaux d'analyse sans recharger les fichiers."
         )
         st.session_state.grouping_mode = grouping_mode
 
@@ -158,21 +154,61 @@ def main():
                     st.error(f"❌ {e}")
 
         # ============================================================
-        # METADONNEES EXCEL
+        # METADONNEES + DIAGNOSTIC
         # ============================================================
         st.divider()
         st.header("📋 2.5 Métadonnées (Espèces)")
-        st.caption("Uploadez le fichier Excel pour activer le mode 🦙 Par Espèce.")
         meta_file = st.file_uploader("NWC_Meta_Sample_Details_Suheil.xlsx", type=["xlsx", "csv"], key="meta_up")
         
-        if meta_file and st.session_state.ind_df_pays is not None and st.button("🔗 Lier Métadonnées", use_container_width=True):
+        if meta_file and st.session_state.ind_df_pays is not None:
             try:
                 if meta_file.name.endswith(".xlsx"):
                     df_excel = pd.read_excel(meta_file, sheet_name="Sample_Details", header=0)
-                    meta = df_excel.iloc[:, [8, 17]].copy()
+                    df_excel = df_excel.ffill() # Remplir les cellules fusionnées
+                    
+                    # Trouver les colonnes dynamiquement
+                    filename_col = next((c for c in df_excel.columns if 'Sample Filename' in str(c)), df_excel.columns[8])
+                    breed_col = next((c for c in df_excel.columns if 'Breed' in str(c)), df_excel.columns[17])
+                    
+                    meta = df_excel[[filename_col, breed_col]].copy()
                     meta.columns = ["Sample_Filename", "Breed"]
                     meta = meta.dropna(subset=["Sample_Filename"])
                     meta = meta[meta["Sample_Filename"].astype(str).str.contains(".CEL", na=False)]
+                else:
+                    meta = pd.read_csv(meta_file)
+                    if "Breed" not in meta.columns:
+                        meta.columns = ["Sample_Filename", "Breed"]
+
+                # --- DIAGNOSTIC ---
+                with st.expander("🔍 Voir le diagnostic des IDs", expanded=True):
+                    c1, c2 = st.columns(2)
+                    with c1:
+                        st.write("**5 premiers IID du PED :**")
+                        st.write(st.session_state.ind_df_pays["IID"].head(5).tolist())
+                    with c2:
+                        st.write("**5 premiers noms de l'Excel :**")
+                        st.write(meta["Sample_Filename"].head(5).tolist())
+
+                    iid_ped = st.session_state.ind_df_pays["IID"].astype(str).str.replace(".CEL", "", regex=False).str.strip().str.upper()
+                    iid_excel = meta["Sample_Filename"].astype(str).str.replace(".CEL", "", regex=False).str.strip().str.upper()
+                    match_exact = len(set(iid_ped).intersection(set(iid_excel)))
+                    st.write(f"**Correspondances exactes : {match_exact} / {len(iid_ped)}**")
+
+                fusion_method = st.radio(
+                    "Méthode de fusion :",
+                    ["🔗 Par ID (noms identiques)", "📊 Par position (même ordre)"],
+                    index=0 if match_exact > 0 else 1,
+                )
+
+                if st.button("🔗 Lier Métadonnées", use_container_width=True):
+                    ind_pays = st.session_state.ind_df_pays.copy()
+                    if "Par ID" in fusion_method:
+                        ind_pays["IID_clean"] = ind_pays["IID"].astype(str).str.replace(".CEL", "", regex=False).str.strip().str.upper()
+                        meta["Sample_Filename"] = meta["Sample_Filename"].astype(str).str.replace(".CEL", "", regex=False).str.strip().str.upper()
+                        ind_species = ind_pays.merge(meta[["Sample_Filename", "Breed"]], left_on="IID_clean", right_on="Sample_Filename", how="left")
+                    else:
+                        ind_species = ind_pays.copy()
+                        ind_species["Breed"] = meta["Breed"].iloc[:len(ind_species)].values
 
                     def map_breed_to_species(breed):
                         b = str(breed).upper()
@@ -184,30 +220,16 @@ def main():
                         if "VICUGNA" in b or "V.SP" in b: return "Vigogne (sp.)"
                         return "Autre"
 
-                    meta["Species"] = meta["Breed"].apply(map_breed_to_species)
-                    meta_df = meta[["Sample_Filename", "Species"]].copy()
-                else:
-                    meta_df = pd.read_csv(meta_file)
+                    ind_species["Species"] = ind_species["Breed"].apply(map_breed_to_species)
+                    ind_species["FID"] = ind_species["Species"].fillna(ind_species["FID"])
+                    ind_species = ind_species.drop(columns=["Species", "Sample_Filename", "IID_clean", "Breed"], errors="ignore")
 
-                # --- CORRECTION : NETTOYAGE DES NOMS POUR LA FUSION ---
-                ind_pays = st.session_state.ind_df_pays.copy()
-                ind_pays["IID_clean"] = ind_pays["IID"].astype(str).str.replace(".CEL", "", regex=False).str.strip().str.upper()
-                meta_df["Sample_Filename"] = meta_df["Sample_Filename"].astype(str).str.replace(".CEL", "", regex=False).str.strip().str.upper()
+                    st.session_state.ind_df_species = ind_species
+                    if grouping_mode.startswith("🦙"):
+                        st.session_state.ind_df = ind_species.copy()
 
-                ind_species = ind_pays.merge(
-                    meta_df[["Sample_Filename", "Species"]],
-                    left_on="IID_clean", right_on="Sample_Filename", how="left"
-                )
-                ind_species["FID"] = ind_species["Species"].fillna(ind_species["FID"])
-                ind_species = ind_species.drop(columns=["Species", "Sample_Filename", "IID_clean"], errors="ignore")
-                
-                st.session_state.ind_df_species = ind_species
-                if grouping_mode.startswith("🦙"):
-                    st.session_state.ind_df = ind_species.copy()
-
-                st.success("✅ Métadonnées liées !")
-                st.write(ind_species["FID"].value_counts())
-                st.dataframe(ind_species[["IID", "FID"]].head(10))
+                    st.success("✅ Métadonnées liées !")
+                    st.write(ind_species["FID"].value_counts())
             except Exception as e:
                 st.error(f"❌ Erreur : {e}")
 
@@ -230,7 +252,7 @@ def main():
     st.caption(f"Référence **{REFERENCE['name']}** · Groupement : **{current_mode}**")
 
     if st.session_state.gt is None:
-        st.info("👋 Chargez `.map` et `.ped`, puis le fichier Excel pour activer le mode Espèce.")
+        st.info("👋 Chargez `.map` et `.ped` pour commencer.")
         return
 
     if st.session_state.ind_df is None:
@@ -263,10 +285,7 @@ def main():
         if st.button("▶ Lancer QC", type="primary", key="qc_btn"):
             try:
                 params = {"geno": geno, "mind": mind, "maf": maf_t, "hwe": hwe_t, "het_sd": het_sd}
-                gf, inf, snf, gp, ip, sp, qs = apply_qc(
-                    st.session_state.gt, st.session_state.ind_df,
-                    st.session_state.snp_df, params, cfg["autosomes"],
-                    keep_autosomes=keep_auto, rem_out=rem_out)
+                gf, inf, snf, gp, ip, sp, qs = apply_qc(st.session_state.gt, st.session_state.ind_df, st.session_state.snp_df, params, cfg["autosomes"], keep_autosomes=keep_auto, rem_out=rem_out)
                 st.session_state.update({"gt_filt": gf, "ind_filt": inf, "snp_filt": snf, "qc_stats": qs})
                 st.success(f"✅ {gf.shape[0]} × {gf.shape[1]}")
             except Exception as e:
@@ -278,23 +297,19 @@ def main():
             c2.metric("SNP finaux",  s["n_snp_final"], delta=-s["excluded_snp"])
             c3.metric("Outliers",    s["trace"].get("het", 0))
             c4.metric("Exclus X/Y/MT", s["trace"].get("autosomes", 0))
-            st.plotly_chart(plot_missing(miss_ind(st.session_state.gt), miss_snp(st.session_state.gt)), use_container_width=True)
 
     # --- 2 LD ---
     with TABS[2]:
         if st.session_state.gt_filt is not None:
             if st.button("▶ LD Pruning", key="ld_btn"):
                 keep = ld_pruning(st.session_state.gt_filt, 50, 5, ld_r2)
-                st.session_state.update({
-                    "gt_pruned": st.session_state.gt_filt[:, keep],
-                    "snp_pruned": st.session_state.snp_filt[keep].reset_index(drop=True)})
+                st.session_state.update({"gt_pruned": st.session_state.gt_filt[:, keep], "snp_pruned": st.session_state.snp_filt[keep].reset_index(drop=True)})
                 st.success(f"✅ {st.session_state.gt_pruned.shape[1]} SNP")
             if st.session_state.gt_pruned is not None:
                 if st.button("▶ LD Decay", key="ld_decay_btn"):
                     st.session_state.ld_df = ld_decay(st.session_state.gt_pruned, st.session_state.snp_pruned)
                 if st.session_state.ld_df is not None:
-                    f = plot_ld(st.session_state.ld_df)
-                    if f: st.plotly_chart(f, use_container_width=True)
+                    st.plotly_chart(plot_ld(st.session_state.ld_df), use_container_width=True)
 
     # --- 3 STRUCTURE ---
     with TABS[3]:
