@@ -75,8 +75,8 @@ def choose_best_k(gt, k_min=2, k_max=8, seed=42):
     return pd.DataFrame(rows)
 
 @st.cache_data(show_spinner=False)
-def reynolds(gt, labels):
-    labels = np.asarray(labels).astype(str)
+def reynolds(gt, _labels):
+    labels = np.asarray(_labels).astype(str)
     pops = sorted(np.unique(labels)); K = len(pops)
     ph = {p: np.nanmean(gt[labels == p], 0) / 2.0 for p in pops}
     D = np.zeros((K, K))
@@ -89,9 +89,9 @@ def reynolds(gt, labels):
     return D, pops
 
 @st.cache_data(show_spinner=False)
-def upgma_bootstrap(gt, snp_df, labels, n_boot=100, seed=42):
+def upgma_bootstrap(gt, snp_df, _labels, n_boot=100, seed=42):
     from scipy.cluster.hierarchy import to_tree
-    labels = np.asarray(labels).astype(str)
+    labels = np.asarray(_labels).astype(str)
     pops = sorted(np.unique(labels)); K = len(pops); n_snp = gt.shape[1]
     def cR(g):
         ph = {p: np.nanmean(g[labels == p], 0) / 2.0 for p in pops}
@@ -202,13 +202,13 @@ def plot_tree(Z, labels, support=None, title="", mid=None):
     return fig
 
 @st.cache_data(show_spinner=False)
-def fst_snp_wc(gt, labels):
-    pops = np.unique(labels); r = len(pops); n_snp = gt.shape[1]
+def fst_snp_wc(gt, _labels):
+    pops = np.unique(_labels); r = len(pops); n_snp = gt.shape[1]
     fst = np.full(n_snp, np.nan)
     for j in range(n_snp):
         n_i = np.zeros(r); p_i = np.zeros(r); h_i = np.zeros(r)
         for k, p in enumerate(pops):
-            g = gt[labels == p, j]; g = g[~np.isnan(g)]
+            g = gt[_labels == p, j]; g = g[~np.isnan(g)]
             if len(g) == 0: continue
             n_i[k] = len(g); p_i[k] = g.mean() / 2.0; h_i[k] = np.mean(g == 1)
         if (n_i >= 2).sum() < 2: continue
@@ -229,8 +229,8 @@ def fst_snp_wc(gt, labels):
     return fst
 
 @st.cache_data(show_spinner=False)
-def fst_pairwise(gt, labels, use_wc84=False):
-    labels = np.asarray(labels).astype(str)
+def fst_pairwise(gt, _labels, use_wc84=False):
+    labels = np.asarray(_labels).astype(str)
     pops = sorted(np.unique(labels)); K = len(pops)
     M = np.full((K, K), np.nan); np.fill_diagonal(M, 0.0)
     masks = {p: (labels == p) for p in pops}
@@ -255,8 +255,8 @@ def fst_pairwise(gt, labels, use_wc84=False):
     return M, pops
 
 @st.cache_data(show_spinner=False)
-def windowed_fst(gt, snp_df, labels, w=50, step=25, use_wc84=False):
-    fst = fst_snp_wc(gt, labels)
+def windowed_fst(gt, snp_df, _labels, w=50, step=25, use_wc84=False):
+    fst = fst_snp_wc(gt, _labels)
     snp = snp_df.copy().reset_index(drop=True)
     n = min(len(snp), len(fst))
     snp = snp.iloc[:n].reset_index(drop=True); fst = fst[:n]
@@ -328,8 +328,8 @@ def tajimas_scan(gt, snp_df, w=25, step=10):
     return pd.DataFrame(res)
 
 @st.cache_data(show_spinner=False)
-def composite_score(gt, snp_df, labels):
-    fst = fst_snp_wc(gt, labels)
+def composite_score(gt, snp_df, _labels):
+    fst = fst_snp_wc(gt, _labels)
     hom = np.nanmean((gt == 0) | (gt == 2), axis=0)
     maf_v = np.nanmean(gt, axis=0) / 2.0
     maf_v = np.minimum(maf_v, 1 - maf_v)
