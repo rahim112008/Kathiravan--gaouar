@@ -1,4 +1,4 @@
-"""app.py — NW Camelids Genomics Platform (Version Définitive)"""
+"""app.py — NW Camelids Genomics Platform (Version Finale Sans Bug)"""
 import gzip, warnings
 import numpy as np
 import pandas as pd
@@ -154,7 +154,7 @@ def main():
                     st.error(f"❌ {e}")
 
         # ============================================================
-        # METADONNEES + DIAGNOSTIC
+        # METADONNEES + DIAGNOSTIC + CORRECTION COLONNE BREED
         # ============================================================
         st.divider()
         st.header("📋 2.5 Métadonnées (Espèces)")
@@ -164,13 +164,11 @@ def main():
             try:
                 if meta_file.name.endswith(".xlsx"):
                     df_excel = pd.read_excel(meta_file, sheet_name="Sample_Details", header=0)
-                    df_excel = df_excel.ffill() # Remplir les cellules fusionnées
+                    df_excel = df_excel.ffill()
                     
-                    # Trouver les colonnes dynamiquement
-                    filename_col = next((c for c in df_excel.columns if 'Sample Filename' in str(c)), df_excel.columns[8])
-                    breed_col = next((c for c in df_excel.columns if 'Breed' in str(c)), df_excel.columns[17])
-                    
-                    meta = df_excel[[filename_col, breed_col]].copy()
+                    # CORRECTION : On force la lecture des colonnes 8 (Nom) et 17 (Breed exact)
+                    # On ne cherche plus par mot clé pour éviter l'erreur "Breed_Code"
+                    meta = df_excel.iloc[:, [8, 17]].copy()
                     meta.columns = ["Sample_Filename", "Breed"]
                     meta = meta.dropna(subset=["Sample_Filename"])
                     meta = meta[meta["Sample_Filename"].astype(str).str.contains(".CEL", na=False)]
@@ -180,38 +178,22 @@ def main():
                         meta.columns = ["Sample_Filename", "Breed"]
 
                 # --- DIAGNOSTIC ---
-                with st.expander("🔍 Voir le diagnostic des IDs", expanded=True):
-                    c1, c2 = st.columns(2)
-                    with c1:
-                        st.write("**5 premiers IID du PED :**")
-                        st.write(st.session_state.ind_df_pays["IID"].head(5).tolist())
-                    with c2:
-                        st.write("**5 premiers noms de l'Excel :**")
-                        st.write(meta["Sample_Filename"].head(5).tolist())
-
+                with st.expander("🔍 Voir le diagnostic des IDs", expanded=False):
                     iid_ped = st.session_state.ind_df_pays["IID"].astype(str).str.replace(".CEL", "", regex=False).str.strip().str.upper()
                     iid_excel = meta["Sample_Filename"].astype(str).str.replace(".CEL", "", regex=False).str.strip().str.upper()
                     match_exact = len(set(iid_ped).intersection(set(iid_excel)))
                     st.write(f"**Correspondances exactes : {match_exact} / {len(iid_ped)}**")
 
-                fusion_method = st.radio(
-                    "Méthode de fusion :",
-                    ["🔗 Par ID (noms identiques)", "📊 Par position (même ordre)"],
-                    index=0 if match_exact > 0 else 1,
-                )
-
                 if st.button("🔗 Lier Métadonnées", use_container_width=True):
                     ind_pays = st.session_state.ind_df_pays.copy()
-                    if "Par ID" in fusion_method:
-                        ind_pays["IID_clean"] = ind_pays["IID"].astype(str).str.replace(".CEL", "", regex=False).str.strip().str.upper()
-                        meta["Sample_Filename"] = meta["Sample_Filename"].astype(str).str.replace(".CEL", "", regex=False).str.strip().str.upper()
-                        ind_species = ind_pays.merge(meta[["Sample_Filename", "Breed"]], left_on="IID_clean", right_on="Sample_Filename", how="left")
-                    else:
-                        ind_species = ind_pays.copy()
-                        ind_species["Breed"] = meta["Breed"].iloc[:len(ind_species)].values
+                    ind_pays["IID_clean"] = ind_pays["IID"].astype(str).str.replace(".CEL", "", regex=False).str.strip().str.upper()
+                    meta["Sample_Filename"] = meta["Sample_Filename"].astype(str).str.replace(".CEL", "", regex=False).str.strip().str.upper()
+                    
+                    ind_species = ind_pays.merge(meta[["Sample_Filename", "Breed"]], left_on="IID_clean", right_on="Sample_Filename", how="left")
 
                     def map_breed_to_species(breed):
                         b = str(breed).upper()
+                        # On regarde le nom complet de la race
                         if "HUACAYA" in b or "SURI" in b or "ALPACA" in b: return "Alpaga"
                         if "GUANACO" in b: return "Guanaco"
                         if "LLAMA" in b: return "Lama"
