@@ -51,11 +51,12 @@ def load_map_uploaded(file_bytes: bytes, fname: str) -> pd.DataFrame:
     return parse_map(raw)
 
 @st.cache_data(show_spinner=False)
-def compute_diversity_metrics(gt, _labels):
-    pops = np.unique(_labels)
+def compute_diversity_metrics(gt, labels):
+    labels = np.array(labels)
+    pops = np.unique(labels)
     results = []
     for p in pops:
-        mask = _labels == p
+        mask = labels == p
         sub_gt = gt[mask]
         if sub_gt.shape[0] == 0: continue
         n_ind = sub_gt.shape[0]
