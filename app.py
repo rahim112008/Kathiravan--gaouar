@@ -1,4 +1,4 @@
-"""app.py — NW Camelids Genomics Platform (Version Finale Sans Bug)"""
+"""app.py — NW Camelids Genomics Platform (Version Finale Sans Bug + Filtrage Espèce)"""
 import gzip, warnings
 import numpy as np
 import pandas as pd
@@ -7,6 +7,7 @@ import plotly.graph_objects as go
 import requests
 import streamlit as st
 import re
+import io
 
 from config_nw import SPECIES_CONFIG, MAP_SOURCES, REFERENCE, get_config
 from core      import (parse_map, parse_ped, parse_vcf, load_pheno, match_pheno,
@@ -92,7 +93,7 @@ def main():
             st.session_state.current_species = species_key
             reset_derived()
             st.session_state.gt = st.session_state.ind_df = st.session_state.snp_df = None
-            st.warning("🔄 Mode changé — réinitialisé.")
+            st.warning("🔄 Mode changé — réinitialisé. Rechargez le PED et les métadonnées.")
 
         st.divider()
         st.header("🎯 Mode de regroupement")
@@ -113,10 +114,15 @@ def main():
         f_map = st.file_uploader(".map", type=["map", "gz"], key="map_up")
         if f_map and st.button("📥 Charger .map", use_container_width=True):
             try:
-                snp_df = load_map_uploaded(f_map.read(), f_map.name)
-                # CORRECTION : Forcer le chromosome à être du texte pour éviter le "1.0" et l'axe "0"
-                snp_df['CHR'] = snp_df['CHR'].astype(str).str.replace(r'\.0$', '', regex=True)
-                st.session_state.snp_df = snp_df
+                # Lecture directe et robuste du fichier .map
+                raw_bytes = f_map.read()
+                if f_map.name.endswith(".gz"):
+                    raw_bytes = gzip.decompress(raw_bytes)
+                
+                map_df = pd.read_csv(io.BytesIO(raw_bytes), sep=r'\s+', header=None, names=['CHR', 'SNP', 'CM', 'BP'])
+                map_df['CHR'] = map_df['CHR'].astype(str).str.replace(r'\.0$', '', regex=True)
+                
+                st.session_state.snp_df = map_df
                 st.success(f"✅ {len(st.session_state.snp_df):,} SNP")
             except Exception as e:
                 st.error(f"❌ {e}")
@@ -157,7 +163,7 @@ def main():
                     st.error(f"❌ {e}")
 
         # ============================================================
-        # METADONNEES + EXTRACTION PAR CODE (CORRIGÉ)
+        # METADONNEES + EXTRACTION PAR CODE + FILTRAGE PAR ESPECE
         # ============================================================
         st.divider()
         st.header("📋 2.5 Métadonnées (Espèces)")
@@ -170,15 +176,12 @@ def main():
                 else:
                     df_excel = pd.read_csv(meta_file)
                 
-                # On récupère la 1ère colonne qui contient les noms (ex: ARG_ALG_ARG01_A1...)
                 id_col = df_excel.columns[0]
                 df_excel['ID_Clean'] = df_excel[id_col].astype(str).str.strip().str.upper().str.replace('.CEL', '', regex=False)
                 
-                # On extrait le code pays (ARG) et le code espèce (ALG)
                 df_excel['Code_Pays'] = df_excel['ID_Clean'].str.split('_').str[0]
                 df_excel['Code_Espece'] = df_excel['ID_Clean'].str.split('_').str[1]
                 
-                # Dictionnaires de traduction
                 dict_especes = {
                     'ALG': 'Alpaga', 'PAH': 'Alpaga', 'BAH': 'Alpaga', 'PAS': 'Alpaga', 'BAS': 'Alpaga',
                     'BLL': 'Lama', 'ALL': 'Lama', 'ULP': 'Lama',
@@ -193,7 +196,6 @@ def main():
                 meta = df_excel[['ID_Clean', 'Espece_Propre', 'Pays_Propre']].copy()
                 meta = meta.drop_duplicates(subset=['ID_Clean'])
 
-                # --- DIAGNOSTIC ---
                 with st.expander("🔍 Voir le diagnostic des IDs", expanded=False):
                     iid_ped = st.session_state.ind_df_pays["IID"].astype(str).str.replace(".CEL", "", regex=False).str.strip().str.upper()
                     iid_excel = meta["ID_Clean"].astype(str)
@@ -204,27 +206,47 @@ def main():
                     ind_pays = st.session_state.ind_df_pays.copy()
                     ind_pays["IID_clean"] = ind_pays["IID"].astype(str).str.replace(".CEL", "", regex=False).str.strip().str.upper()
                     
-                    # how='left' garantit qu'on garde EXACTEMENT 374 animaux
                     ind_merged = ind_pays.merge(meta[['ID_Clean', 'Espece_Propre', 'Pays_Propre']], left_on="IID_clean", right_on="ID_Clean", how="left")
 
                     ind_merged["Espece_Propre"] = ind_merged["Espece_Propre"].fillna("Autre")
                     ind_merged["Pays_Propre"] = ind_merged["Pays_Propre"].fillna("Autre")
 
-                    # Mise à jour du groupe (FID) selon l'espèce
                     ind_species = ind_merged.copy()
                     ind_species["FID"] = ind_species["Espece_Propre"]
                     
-                    # Mise à jour du groupe (FID) selon le pays
                     ind_pays_out = ind_merged.copy()
                     ind_pays_out["FID"] = ind_pays_out["Pays_Propre"]
 
                     st.session_state.ind_df_species = ind_species
                     st.session_state.ind_df_pays = ind_pays_out
                     
-                    if grouping_mode.startswith("🦙"):
-                        st.session_state.ind_df = ind_species.copy()
+                    # ========================================================
+                    # FILTRAGE AUTOMATIQUE PAR ESPECE (Si mode spécifique)
+                    # ========================================================
+                    if species_key != "🌍 Toutes les espèces (Global)":
+                        espece_cible = None
+                        if "Alpaga" in species_key: espece_cible = "Alpaga"
+                        elif "Lama" in species_key: espece_cible = "Lama"
+                        elif "Guanaco" in species_key: espece_cible = "Guanaco"
+                        elif "Vigogne" in species_key: espece_cible = "Vigogne"
+                        
+                        if espece_cible:
+                            mask = ind_species["Espece_Propre"] == espece_cible
+                            n_isolated = mask.sum()
+                            
+                            if n_isolated > 0:
+                                # Filtrage strict des génotypes et des métadonnées pour cette espèce
+                                st.session_state.gt = st.session_state.gt[mask.values, :]
+                                st.session_state.ind_df = ind_species[mask].copy()
+                                st.success(f"🔬 **Mode Espèce** : Analyse isolée de {n_isolated} individus ({espece_cible}).")
+                            else:
+                                st.error(f"❌ Aucun animal trouvé pour {espece_cible}.")
                     else:
-                        st.session_state.ind_df = ind_pays_out.copy()
+                        # Mode Global : on garde tout le monde
+                        if grouping_mode.startswith("🦙"):
+                            st.session_state.ind_df = ind_species.copy()
+                        else:
+                            st.session_state.ind_df = ind_pays_out.copy()
 
                     st.success("✅ Métadonnées liées !")
                     st.write("**Répartition par Espèce :**")
@@ -277,10 +299,12 @@ def main():
         c3.metric("Chromosomes", st.session_state.snp_df["CHR"].nunique())
         c4.metric("Groupes",     st.session_state.ind_df["FID"].nunique())
         
-        # CORRECTION : Affichage propre du graphique des chromosomes
-        ch = st.session_state.snp_df["CHR"].astype(str).value_counts().sort_index()
+        # Tri naturel des chromosomes (1, 2, 3... au lieu de 1, 10, 2)
+        ch = st.session_state.snp_df["CHR"].astype(str).value_counts()
+        ch = ch.reindex(sorted(ch.index, key=lambda x: (len(x), x)))
+        
         fig_ch = px.bar(x=ch.index, y=ch.values, labels={"x": "Chromosome", "y": "Nb SNP"}, title="Nombre de SNP par chromosome")
-        fig_ch.update_xaxes(type='category') # Force l'axe X à être catégoriel (1, 2, 3...)
+        fig_ch.update_xaxes(type='category')
         st.plotly_chart(fig_ch, use_container_width=True)
         
         st.subheader(f"📋 Répartition par {current_mode}")
