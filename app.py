@@ -1,4 +1,4 @@
-"""app.py — NW Camelids Genomics Platform (Version Finale Infaillible)"""
+"""app.py — NW Camelids Genomics Platform (Version Finale)"""
 import gzip, warnings
 import numpy as np
 import pandas as pd
@@ -171,14 +171,11 @@ def main():
                 if st.button("🔗 Extraire les Métadonnées", use_container_width=True):
                     ind_pays = st.session_state.ind_df_pays.copy()
                     
-                    # Nettoyage du nom de fichier
                     ind_pays["IID_clean"] = ind_pays["IID"].astype(str).str.replace(".CEL", "", regex=False).str.strip().str.upper()
                     
-                    # Extraction par découpage (split) sur "_"
                     ind_pays["Code_Pays"] = ind_pays["IID_clean"].str.split('_').str[0]
                     ind_pays["Code_Race"] = ind_pays["IID_clean"].str.split('_').str[1]
 
-                    # Dictionnaires de correspondance exacts
                     dict_pays = {'ARG': 'Argentina', 'BOL': 'Bolivia', 'PER': 'Peru', 'USA': 'USA', 'CHL': 'Chile'}
                     
                     dict_race = {
@@ -198,12 +195,10 @@ def main():
                         'UVV': ('Vicugna', 'US Vicugna')
                     }
 
-                    # Application des dictionnaires
                     ind_pays["Pays"] = ind_pays["Code_Pays"].map(dict_pays).fillna("Inconnu")
                     ind_pays["Espece"] = ind_pays["Code_Race"].map(lambda x: dict_race.get(x, ('Inconnu', 'Inconnu'))[0])
                     ind_pays["Race"] = ind_pays["Code_Race"].map(lambda x: dict_race.get(x, ('Inconnu', 'Inconnu'))[1])
 
-                    # Création des bases pour les 3 modes
                     ind_pays_out = ind_pays.copy(); ind_pays_out["FID"] = ind_pays_out["Pays"]
                     ind_species = ind_pays.copy(); ind_species["FID"] = ind_species["Espece"]
                     ind_race = ind_pays.copy(); ind_race["FID"] = ind_race["Race"]
@@ -212,7 +207,6 @@ def main():
                     st.session_state.ind_df_species = ind_species
                     st.session_state.ind_df_race = ind_race
                     
-                    # Filtrage auto
                     if species_key != "🌍 Toutes les espèces (Global)":
                         espece_cible = None
                         if "Alpaga" in species_key: espece_cible = "Alpaca"
@@ -473,27 +467,70 @@ def main():
                 except Exception as e:
                     st.error(f"❌ {e}")
 
+    # --- 11 ANNOTATION ---
     with TABS[11]:
-        gff_f = st.file_uploader("GFF3/GTF", type=["gff", "gff3", "gtf", "gz"], key="ann_gff")
-        src = st.radio("Source", ["Sélection", "GWAS"], horizontal=True)
-        wk = st.slider("Fenêtre kb", 1, 500, 50)
+        st.subheader("🧬 Annotation des SNP candidats")
+        gff_f = st.file_uploader("GFF3/GTF (VicPac4)", type=["gff", "gff3", "gtf", "gz"], key="ann_gff")
+        
+        col1, col2 = st.columns(2)
+        with col1:
+            src = st.radio("Source des SNP :", ["FST Fenêtré", "CSS", "GWAS"], horizontal=True)
+        with col2:
+            unit = st.radio("Unité de mesure :", ["Position (pb)", "Distance (kb)"], horizontal=True)
+            
+        wk = st.slider("Fenêtre de recherche (kb)", 1, 1000, 50)
+        
         if gff_f:
             try:
                 gff = parse_gff3(gff_f.read())
                 st.session_state.sel_gff = gff
                 st.success(f"✅ {len(gff)} gènes trouvés")
+                
                 snps = None
-                if src == "Sélection" and st.session_state.win_fst is not None:
-                    snps = st.session_state.win_fst.head(20).rename(columns={"START": "BP", "TOP_SNP": "SNP"})[["SNP", "CHR", "BP"]]
+                if src == "FST Fenêtré" and st.session_state.win_fst is not None:
+                    outliers = st.session_state.win_fst[st.session_state.win_fst["OUTLIER"] == True]
+                    if not outliers.empty:
+                        snps = outliers[["TOP_SNP", "CHR", "MID"]].rename(columns={"TOP_SNP": "SNP", "MID": "BP"})
+                    else:
+                        snps = st.session_state.win_fst.head(50)[["TOP_SNP", "CHR", "MID"]].rename(columns={"TOP_SNP": "SNP", "MID": "BP"})
+                        st.info("💡 Aucun outlier détecté (Z>3). Utilisation des 50 premières fenêtres.")
+                        
+                elif src == "CSS" and st.session_state.css_df is not None:
+                    snps = st.session_state.css_df.head(50)[["SNP", "CHR", "BP"]]
+                    
                 elif src == "GWAS" and st.session_state.gwas_res is not None:
-                    snps = st.session_state.gwas_res.sort_values("P").head(20)[["SNP", "CHR", "BP"]]
-                if snps is not None and st.button("🔍 Annoter", key="ann_btn"):
-                    st.session_state.ann_df = annotate_genes(snps, gff, wk)
-                    st.success(f"✅ {len(st.session_state.ann_df)} associations")
-                if st.session_state.ann_df is not None:
-                    st.dataframe(st.session_state.ann_df, use_container_width=True)
+                    snps = st.session_state.gwas_res.sort_values("P").head(50)[["SNP", "CHR", "BP"]]
+                
+                if snps is not None and not snps.empty:
+                    if st.button("🔍 Lancer l'annotation", type="primary"):
+                        st.session_state.ann_df = annotate_genes(snps, gff, wk)
+                        
+                        if not st.session_state.ann_df.empty:
+                            st.success(f"✅ {len(st.session_state.ann_df)} associations SNP-Gène trouvées.")
+                        else:
+                            st.warning(f"⚠️ 0 association. Essayez d'augmenter la fenêtre de recherche (ex: 500 kb).")
+                            
+                elif snps is None:
+                    st.warning(f"Veuillez d'abord lancer l'analyse {src} pour avoir des SNP à annoter.")
+                    
             except Exception as e:
-                st.error(f"❌ {e}")
+                st.error(f"❌ Erreur : {e}")
+
+        # --- AFFICHAGE DES RÉSULTATS ET DU GRAPHIQUE VISUEL ---
+        if st.session_state.ann_df is not None and not st.session_state.ann_df.empty:
+            df_res = st.session_state.ann_df.copy()
+            
+            st.subheader("📋 Tableau des associations")
+            st.dataframe(df_res, use_container_width=True)
+            
+            st.subheader("🎯 Représentation visuelle (Top Association)")
+            top_assoc = df_res.iloc[0]
+            
+            # Création de la figure
+            fig = plot_gene_snp(top_assoc, top_assoc)
+            st.plotly_chart(fig, use_container_width=True)
+            
+            st.download_button("⬇ Télécharger (CSV)", df_res.to_csv(index=False).encode(), "annotation_genes.csv", "text/csv")
 
     with TABS[12]:
         snp_list = []
