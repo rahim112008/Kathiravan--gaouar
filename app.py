@@ -50,7 +50,6 @@ def load_map_uploaded(file_bytes: bytes, fname: str) -> pd.DataFrame:
     raw = gzip.decompress(file_bytes) if fname.endswith(".gz") else file_bytes
     return parse_map(raw)
 
-@st.cache_data(show_spinner=False)
 def compute_diversity_metrics(gt, labels):
     labels = np.array(labels)
     pops = np.unique(labels)
@@ -132,6 +131,11 @@ def main():
                 if len(data) > 0:
                     map_df = pd.DataFrame(data, columns=['CHR', 'SNP', 'CM', 'BP'])
                     map_df['CHR'] = map_df['CHR'].astype(str).str.replace(r'\.0$', '', regex=True)
+                    
+                    # CORRECTION : Forcer BP et CM à être des nombres
+                    map_df['BP'] = pd.to_numeric(map_df['BP'], errors='coerce').fillna(0).astype(int)
+                    map_df['CM'] = pd.to_numeric(map_df['CM'], errors='coerce').fillna(0.0)
+                    
                     st.session_state.snp_df = map_df
                     st.success(f"✅ {len(map_df):,} SNP chargés sur {map_df['CHR'].nunique()} chromosomes")
                 else:
@@ -531,7 +535,7 @@ def main():
                     inputs.append(str(s))
             vres = run_vep_api(inputs, cfg["vep_species"])
             if not vres.empty:
-                vres["LOCALISATION"] = vres["CONSEQUENCE"].apply(traduire_consequence_vep)
+                vres["LOCALISATION"] = vres["CONSEQUENCE"].apply(traduction_consequence_vep)
                 st.session_state.vep_res = vres
                 st.success("✅")
         if st.session_state.vep_res is not None:
@@ -633,7 +637,6 @@ def main():
                 st.dataframe(df_div, use_container_width=True)
                 st.download_button("⬇ Télécharger", df_div.to_csv(index=False).encode(), "diversity_metrics.csv", "text/csv")
 
-    # --- 21 COMPARAISON 2 A 2 ---
     with TABS[21]:
         st.subheader("⚖️ Comparaison directe entre deux groupes")
         if st.session_state.gt_filt is not None:
@@ -652,14 +655,11 @@ def main():
                     m2 = (labs == pop2)
                     
                     if m1.sum() > 0 and m2.sum() > 0:
-                        # 1. Calcul du FST
                         sub_gt = gu[m1 | m2]
                         sub_lab = labs[m1 | m2]
                         fst_m, _ = fst_pairwise(sub_gt, sub_lab)
-                        # La matrice FST est 2x2, l'indice [0,1] contient la valeur entre les 2 pops
                         st.metric(f"FST entre {pop1} et {pop2}", f"{fst_m[0,1]:.4f}")
                         
-                        # 2. Allèles fixés différemment (Fst = 1)
                         g1 = gu[m1]; g2 = gu[m2]
                         p1 = np.nanmean(g1, axis=0) / 2.0
                         p2 = np.nanmean(g2, axis=0) / 2.0
@@ -678,7 +678,6 @@ def main():
             else:
                 st.warning("Vous devez être en mode Global (toutes les espèces) pour comparer 2 groupes.")
 
-    # --- 22 BLOCS DE LD (HEATMAP) ---
     with TABS[22]:
         st.subheader("🧬 Carte de chaleur du Déséquilibre de Liaison (LD)")
         if st.session_state.gt_filt is not None:
@@ -696,7 +695,6 @@ def main():
                 gt_chr = gu[:, idx_chr]
                 X = np.nan_to_num(gt_chr, nan=np.nanmean(gt_chr, axis=0))
                 
-                # Supprimer les colonnes constantes pour éviter les warnings de corrélation
                 valid_cols = X.std(axis=0) > 1e-9
                 X_val = X[:, valid_cols]
                 if X_val.shape[1] > 1:
@@ -713,7 +711,6 @@ def main():
             else:
                 st.info("Pas assez de SNP sur ce chromosome pour afficher un bloc.")
 
-    # --- 23 METRIQUES COMPARATIVES ---
     with TABS[23]:
         st.subheader("📊 Tableau comparatif des races/espèces")
         if st.session_state.gt_filt is not None:
