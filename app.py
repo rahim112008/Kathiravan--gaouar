@@ -33,7 +33,7 @@ _KEYS = [
     "gebv_df", "gblup_stats",
     "vep_res", "ncbi_gene_res", "sel_ann", "sel_gff", "ann_df",
     "mapping_df", "pair_res", "current_species", "grouping_mode",
-    "ind_df_pays", "ind_df_species", "ind_df_race",
+    "ind_df_pays", "ind_df_species", "ind_df_race", "snps_specifiques"
 ]
 for _k in _KEYS:
     if _k not in st.session_state:
@@ -474,9 +474,9 @@ def main():
         
         col1, col2 = st.columns(2)
         with col1:
-            src = st.radio("Source des SNP :", ["FST Fenêtré", "CSS", "GWAS"], horizontal=True)
+            src = st.radio("Source des SNP :", ["FST Fenêtré", "CSS", "GWAS", "Comparaison 2 à 2"], horizontal=True)
         with col2:
-            unit = st.radio("Unité de mesure :", ["Position (pb)", "Distance (kb)"], horizontal=True)
+            unit = st.radio("Unité d'affichage :", ["Position (bp)", "Distance (kb)", "Distance (cM)"], horizontal=True)
             
         wk = st.slider("Fenêtre de recherche (kb)", 1, 1000, 50)
         
@@ -493,13 +493,15 @@ def main():
                         snps = outliers[["TOP_SNP", "CHR", "MID"]].rename(columns={"TOP_SNP": "SNP", "MID": "BP"})
                     else:
                         snps = st.session_state.win_fst.head(50)[["TOP_SNP", "CHR", "MID"]].rename(columns={"TOP_SNP": "SNP", "MID": "BP"})
-                        st.info("💡 Aucun outlier détecté (Z>3). Utilisation des 50 premières fenêtres.")
-                        
+                
                 elif src == "CSS" and st.session_state.css_df is not None:
                     snps = st.session_state.css_df.head(50)[["SNP", "CHR", "BP"]]
                     
                 elif src == "GWAS" and st.session_state.gwas_res is not None:
                     snps = st.session_state.gwas_res.sort_values("P").head(50)[["SNP", "CHR", "BP"]]
+                
+                elif src == "Comparaison 2 à 2" and st.session_state.get("snps_specifiques") is not None:
+                    snps = st.session_state.snps_specifiques
                 
                 if snps is not None and not snps.empty:
                     if st.button("🔍 Lancer l'annotation", type="primary"):
@@ -508,7 +510,7 @@ def main():
                         if not st.session_state.ann_df.empty:
                             st.success(f"✅ {len(st.session_state.ann_df)} associations SNP-Gène trouvées.")
                         else:
-                            st.warning(f"⚠️ 0 association. Essayez d'augmenter la fenêtre de recherche (ex: 500 kb).")
+                            st.warning(f"⚠️ 0 association. Essayez d'augmenter la fenêtre de recherche.")
                             
                 elif snps is None:
                     st.warning(f"Veuillez d'abord lancer l'analyse {src} pour avoir des SNP à annoter.")
@@ -523,34 +525,57 @@ def main():
             st.subheader("📋 Tableau des associations")
             st.dataframe(df_res, use_container_width=True)
             
-            st.subheader("🎯 Représentation visuelle (Top Association)")
-            top_assoc = df_res.iloc[0]
+            st.subheader("🎯 Représentation visuelle")
+            
+            # Sélection du SNP à visualiser
+            snps_uniques = df_res["SNP"].unique().tolist()
+            snp_choisi = st.selectbox("Choisissez le SNP à visualiser :", snps_uniques)
+            
+            # Filtrer le DataFrame pour le SNP choisi
+            df_snp = df_res[df_res["SNP"] == snp_choisi]
+            top_assoc = df_snp.iloc[0] # On prend la première association de ce SNP
             
             # Création de la figure
-            fig = plot_gene_snp(top_assoc, top_assoc)
+            fig = plot_gene_snp(top_assoc, top_assoc, unit=unit)
             st.plotly_chart(fig, use_container_width=True)
             
             st.download_button("⬇ Télécharger (CSV)", df_res.to_csv(index=False).encode(), "annotation_genes.csv", "text/csv")
 
     with TABS[12]:
+        st.subheader("🔬 VEP & NCBI")
         snp_list = []
         if st.session_state.gwas_res is not None: snp_list = st.session_state.gwas_res.sort_values("P")["SNP"].head(20).tolist()
         elif st.session_state.win_fst is not None: snp_list = st.session_state.win_fst["TOP_SNP"].head(20).tolist()
         elif st.session_state.css_df is not None: snp_list = st.session_state.css_df["SNP"].head(20).tolist()
-        if snp_list and st.button("🔬 Lancer VEP", key="vep_btn"):
-            su = st.session_state.snp_pruned if st.session_state.snp_pruned is not None else st.session_state.snp_filt
-            inputs = []
-            for s in snp_list:
-                row = su[su["SNP"].astype(str) == str(s)]
-                if not row.empty:
-                    r = row.iloc[0]; a, b = _ca(r.get("A1")), _ca(r.get("A2"))
-                    inputs.append(f"{r['CHR']}:{int(r['BP'])}:{a}:{b}" if a != "0" and b != "0" else f"{r['CHR']}:{int(r['BP'])}-{int(r['BP'])}")
-                else: inputs.append(str(s))
-            vres = run_vep_api(inputs, cfg["vep_species"])
-            if not vres.empty:
-                vres["LOCALISATION"] = vres["CONSEQUENCE"].apply(traduction_consequence_vep)
-                st.session_state.vep_res = vres
-                st.success("✅ VEP terminé")
+        
+        if not snp_list:
+            st.info("Veuillez lancer une analyse (GWAS, FST ou CSS) pour obtenir des SNP à envoyer au VEP.")
+        else:
+            if st.button("🔬 Lancer VEP (Ensembl)", key="vep_btn"):
+                su = st.session_state.snp_pruned if st.session_state.snp_pruned is not None else st.session_state.snp_filt
+                inputs = []
+                for s in snp_list:
+                    row = su[su["SNP"].astype(str) == str(s)]
+                    if not row.empty:
+                        r = row.iloc[0]; a, b = _ca(r.get("A1")), _ca(r.get("A2"))
+                        # Format Ensembl : chr:pos:ref:alt
+                        if a != "0" and b != "0":
+                            inputs.append(f"{r['CHR']}:{int(r['BP'])}:{a}:{b}")
+                        else:
+                            inputs.append(f"{r['CHR']}:{int(r['BP'])}-{int(r['BP'])}")
+                    else: 
+                        inputs.append(str(s))
+                
+                with st.spinner("Connexion à l'API Ensembl en cours (cela peut prendre 1 à 2 minutes)..."):
+                    vres = run_vep_api(inputs, cfg["vep_species"])
+                    
+                if not vres.empty:
+                    vres["LOCALISATION"] = vres["CONSEQUENCE"].apply(traduction_consequence_vep)
+                    st.session_state.vep_res = vres
+                    st.success("✅ VEP terminé avec succès")
+                else:
+                    st.error("❌ L'API n'a pas retourné de résultats. Vérifiez votre connexion ou réessayez plus tard.")
+                    
         if st.session_state.vep_res is not None:
             st.dataframe(st.session_state.vep_res, use_container_width=True)
 
@@ -658,7 +683,9 @@ def main():
                 pop1 = col1.selectbox("Groupe 1", pops, index=0)
                 pop2 = col2.selectbox("Groupe 2", pops, index=1 if len(pops)>1 else 0)
                 
-                if st.button("🔬 Lancer la comparaison"):
+                seuil = st.slider("Seuil de différenciation (Fréquence allélique)", 0.5, 1.0, 0.9, 0.05)
+                
+                if st.button("🔬 Lancer la comparaison", key="comp_btn"):
                     gu = st.session_state.gt_pruned if st.session_state.gt_pruned is not None else st.session_state.gt_filt
                     su = st.session_state.snp_pruned if st.session_state.snp_pruned is not None else st.session_state.snp_filt
                     labs = st.session_state.ind_filt["FID"].astype(str).values
@@ -673,15 +700,22 @@ def main():
                         g1 = gu[m1]; g2 = gu[m2]
                         p1 = np.nanmean(g1, axis=0) / 2.0; p2 = np.nanmean(g2, axis=0) / 2.0
                         
-                        fixed_diff = ((p1 >= 0.99) & (p2 <= 0.01)) | ((p1 <= 0.01) & (p2 >= 0.99))
-                        n_fixed = np.sum(fixed_diff)
+                        inv_seuil = 1 - seuil
+                        diff_haute = ((p1 >= seuil) & (p2 <= inv_seuil)) | ((p1 <= inv_seuil) & (p2 >= seuil))
                         
-                        st.write(f"**Allèles fixés différemment** : {n_fixed} SNP")
-                        if n_fixed > 0:
-                            df_fixed = su[fixed_diff].copy()
-                            df_fixed["Freq_" + pop1] = p1[fixed_diff]
-                            df_fixed["Freq_" + pop2] = p2[fixed_diff]
-                            st.dataframe(df_fixed[["CHR", "SNP", "BP", "Freq_"+pop1, "Freq_"+pop2]], use_container_width=True)
+                        n_diff = np.sum(diff_haute)
+                        
+                        st.write(f"**SNP fortement différenciés (seuil {seuil})** : {n_diff} SNP")
+                        if n_diff > 0:
+                            df_diff = su[diff_haute].copy()
+                            df_diff["Freq_" + pop1] = p1[diff_haute]
+                            df_diff["Freq_" + pop2] = p2[diff_haute]
+                            st.dataframe(df_diff[["CHR", "SNP", "BP", "Freq_"+pop1, "Freq_"+pop2]], use_container_width=True)
+                            
+                            st.session_state.snps_specifiques = df_diff[["SNP", "CHR", "BP"]]
+                            st.success(f"✅ {n_diff} SNP sauvegardés pour l'annotation !")
+                        else:
+                            st.warning("Aucun SNP ne dépasse ce seuil. Essayez de baisser le curseur (ex: 0.8).")
                     else:
                         st.error("Un des groupes n'a pas d'individus.")
 
