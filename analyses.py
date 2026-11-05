@@ -819,7 +819,7 @@ def annotate_genes(snp_df, gff, wk=50):
     return pd.DataFrame(res)
 
 # --- NOUVELLE FONCTION POUR LE GRAPHIQUE VISUEL ---
-def plot_gene_snp(snp_row, gene_row):
+def plot_gene_snp(snp_row, gene_row, unit="Position (bp)"):
     fig = go.Figure()
     
     # Ligne du gène
@@ -834,7 +834,7 @@ def plot_gene_snp(snp_row, gene_row):
                              
     fig.update_layout(
         title=f"SNP {snp_row['SNP']} vs Gène {gene_row['GENE']} (Distance: {snp_row['DIST_BP']} bp)",
-        xaxis_title="Position (bp)",
+        xaxis_title=unit,
         yaxis=dict(showticklabels=False, range=[0.5, 1.5]),
         height=250,
         margin=dict(l=20, r=20, t=40, b=20)
