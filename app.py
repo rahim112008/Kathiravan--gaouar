@@ -1,4 +1,4 @@
-"""app.py — NW Camelids Genomics Platform (Version Finale Intelligente)"""
+"""app.py — NW Camelids Genomics Platform (Version Finale Infaillible)"""
 import gzip, warnings
 import numpy as np
 import pandas as pd
@@ -155,7 +155,7 @@ def main():
                 st.error(f"❌ {e}")
 
         # ============================================================
-        # LECTURE ULTRA-ROBUSTE DE L'EXCEL (Feuille 1 pour IDs, Feuille 2 pour Métadonnées)
+        # EXTRACTION DIRECTE DEPUIS LE NOM (La méthode infaillible)
         # ============================================================
         st.divider()
         st.header("📋 2.5 Métadonnées (Espèces / Races)")
@@ -164,63 +164,55 @@ def main():
         if meta_file and st.session_state.ind_df_pays is not None:
             try:
                 if meta_file.name.endswith(".xlsx"):
-                    # 1. Feuille 1 (IDs sûrs à 100%)
-                    df1 = pd.read_excel(meta_file, sheet_name="Tabelle1")
-                    df1['ID_Clean'] = df1.iloc[:, 0].astype(str).str.strip().str.upper().str.replace('.CEL', '', regex=False)
-                    
-                    # 2. Feuille 2 (Métadonnées par position de colonne)
-                    df2 = pd.read_excel(meta_file, sheet_name="Sample_Details")
-                    # Colonne A=0, M=12 (Pays), P=15 (Espèce), R=17 (Race)
-                    meta2 = pd.DataFrame({
-                        'ID_Meta': df2.iloc[:, 0],
-                        'Pays': df2.iloc[:, 12],
-                        'Espece': df2.iloc[:, 15],
-                        'Race': df2.iloc[:, 17]
-                    })
-                    meta2['ID_Clean'] = meta2['ID_Meta'].astype(str).str.strip().str.upper().str.replace('.CEL', '', regex=False)
-                    
-                    # 3. Fusion parfaite (on garde les 374 IDs de la Feuille 1 et on ajoute les infos)
-                    meta = df1[['ID_Clean']].merge(meta2[['ID_Clean', 'Pays', 'Espece', 'Race']], on='ID_Clean', how='left')
-                    meta = meta.drop_duplicates(subset=['ID_Clean'])
+                    df_excel = pd.read_excel(meta_file)
                 else:
                     df_excel = pd.read_csv(meta_file)
-                    meta = pd.DataFrame({
-                        'ID_Meta': df_excel.iloc[:, 0],
-                        'Pays': df_excel.iloc[:, 12],
-                        'Espece': df_excel.iloc[:, 15],
-                        'Race': df_excel.iloc[:, 17]
-                    })
-                    meta['ID_Clean'] = meta['ID_Meta'].astype(str).str.strip().str.upper().str.replace('.CEL', '', regex=False)
-                    meta = meta.drop_duplicates(subset=['ID_Clean'])
 
-                # Diagnostic
-                with st.expander("🔍 Voir le diagnostic des IDs", expanded=False):
-                    iid_ped = st.session_state.ind_df_pays["IID"].astype(str).str.replace(".CEL", "", regex=False).str.strip().str.upper()
-                    iid_excel = meta["ID_Clean"].astype(str)
-                    match_exact = len(set(iid_ped).intersection(set(iid_excel)))
-                    st.write(f"**Correspondances exactes : {match_exact} / {len(iid_ped)}**")
-
-                if st.button("🔗 Lier Métadonnées", use_container_width=True):
+                if st.button("🔗 Extraire les Métadonnées", use_container_width=True):
                     ind_pays = st.session_state.ind_df_pays.copy()
+                    
+                    # Nettoyage du nom de fichier
                     ind_pays["IID_clean"] = ind_pays["IID"].astype(str).str.replace(".CEL", "", regex=False).str.strip().str.upper()
                     
-                    ind_merged = ind_pays.merge(meta, left_on="IID_clean", right_on="ID_Clean", how="left")
+                    # Extraction par découpage (split) sur "_"
+                    ind_pays["Code_Pays"] = ind_pays["IID_clean"].str.split('_').str[0]
+                    ind_pays["Code_Race"] = ind_pays["IID_clean"].str.split('_').str[1]
 
-                    # Remplissage des vides
-                    ind_merged["Pays"] = ind_merged["Pays"].fillna("Inconnu")
-                    ind_merged["Espece"] = ind_merged["Espece"].fillna("Inconnu")
-                    ind_merged["Race"] = ind_merged["Race"].fillna("Inconnu")
+                    # Dictionnaires de correspondance exacts
+                    dict_pays = {'ARG': 'Argentina', 'BOL': 'Bolivia', 'PER': 'Peru', 'USA': 'USA', 'CHL': 'Chile'}
+                    
+                    dict_race = {
+                        'BAH': ('Alpaca', 'Bolivian Huacaya'),
+                        'BAS': ('Alpaca', 'Bolivian Suri'),
+                        'PAH': ('Alpaca', 'Peruvian Huacaya'),
+                        'PAS': ('Alpaca', 'Peruvian Suri'),
+                        'ULP': ('Alpaca', 'US Alpaca'),
+                        'ALG': ('Guanaco', 'Argentinian Guanaco'),
+                        'CLG': ('Guanaco', 'US Guanaco'),
+                        'ALL': ('Llama', 'Argentinian Llama'),
+                        'BLL': ('Llama', 'Bolivian Llama'),
+                        'AVS': ('Vicugna', 'Argentinian Vicugna'),
+                        'BVM': ('Vicugna', 'Bolivian V.Mensalis'),
+                        'BVS': ('Vicugna', 'Bolivian V.Sp.'),
+                        'BVV': ('Vicugna', 'Bolivian V.Vicugna'),
+                        'UVV': ('Vicugna', 'US Vicugna')
+                    }
+
+                    # Application des dictionnaires
+                    ind_pays["Pays"] = ind_pays["Code_Pays"].map(dict_pays).fillna("Inconnu")
+                    ind_pays["Espece"] = ind_pays["Code_Race"].map(lambda x: dict_race.get(x, ('Inconnu', 'Inconnu'))[0])
+                    ind_pays["Race"] = ind_pays["Code_Race"].map(lambda x: dict_race.get(x, ('Inconnu', 'Inconnu'))[1])
 
                     # Création des bases pour les 3 modes
-                    ind_pays_out = ind_merged.copy(); ind_pays_out["FID"] = ind_pays_out["Pays"]
-                    ind_species = ind_merged.copy(); ind_species["FID"] = ind_species["Espece"]
-                    ind_race = ind_merged.copy(); ind_race["FID"] = ind_race["Race"]
+                    ind_pays_out = ind_pays.copy(); ind_pays_out["FID"] = ind_pays_out["Pays"]
+                    ind_species = ind_pays.copy(); ind_species["FID"] = ind_species["Espece"]
+                    ind_race = ind_pays.copy(); ind_race["FID"] = ind_race["Race"]
 
                     st.session_state.ind_df_pays = ind_pays_out
                     st.session_state.ind_df_species = ind_species
                     st.session_state.ind_df_race = ind_race
                     
-                    # Filtrage auto selon le menu
+                    # Filtrage auto
                     if species_key != "🌍 Toutes les espèces (Global)":
                         espece_cible = None
                         if "Alpaga" in species_key: espece_cible = "Alpaca"
@@ -245,10 +237,10 @@ def main():
                         else:
                             st.session_state.ind_df = ind_pays_out.copy()
 
-                    st.success("✅ Métadonnées liées avec succès !")
-                    st.write("**Répartition par Espèce (Officielle) :**")
+                    st.success("✅ Métadonnées extraites avec succès !")
+                    st.write("**Répartition par Espèce :**")
                     st.dataframe(ind_species["Espece"].value_counts().reset_index(), use_container_width=True)
-                    st.write("**Répartition par Race (Officielle) :**")
+                    st.write("**Répartition par Race :**")
                     st.dataframe(ind_race["Race"].value_counts().reset_index(), use_container_width=True)
             except Exception as e:
                 st.error(f"❌ Erreur Excel : {e}")
@@ -272,7 +264,7 @@ def main():
         st.info("👋 Chargez `.map`, `.ped` et `.xlsx` pour commencer.")
         return
     if st.session_state.ind_df is None:
-        st.warning("⚠️ Veuillez lier les métadonnées (étape 2.5) pour activer les analyses.")
+        st.warning("⚠️ Veuillez extraire les métadonnées (étape 2.5) pour activer les analyses.")
         return
 
     TABS = st.tabs([
