@@ -785,7 +785,7 @@ def annotate_genes(snp_df, gff, wk=50):
     for _, s in snp_df.iterrows():
         pos = s.get("BP", s.get("START", 0)); ch = str(s["CHR"])
         
-        gff_chr = gff[gff["CHR"] == ch]
+        gff_chr = gff[gff["CHR"] == ch].copy() # Ajout de .copy() pour éviter les warnings
         if gff_chr.empty: continue
         
         dists = []
@@ -817,6 +817,29 @@ def annotate_genes(snp_df, gff, wk=50):
             })
             
     return pd.DataFrame(res)
+
+# --- NOUVELLE FONCTION POUR LE GRAPHIQUE VISUEL ---
+def plot_gene_snp(snp_row, gene_row):
+    fig = go.Figure()
+    
+    # Ligne du gène
+    fig.add_trace(go.Scatter(x=[gene_row['GENE_START'], gene_row['GENE_END']], y=[1, 1],
+                             mode='lines', line=dict(color='#3498db', width=15),
+                             name=f"Gène {gene_row['GENE']}"))
+                             
+    # Point du SNP
+    fig.add_trace(go.Scatter(x=[snp_row['SNP_POS']], y=[1], mode='markers',
+                             marker=dict(color='#e74c3c', size=15, symbol='triangle-down'),
+                             name='SNP'))
+                             
+    fig.update_layout(
+        title=f"SNP {snp_row['SNP']} vs Gène {gene_row['GENE']} (Distance: {snp_row['DIST_BP']} bp)",
+        xaxis_title="Position (bp)",
+        yaxis=dict(showticklabels=False, range=[0.5, 1.5]),
+        height=250,
+        margin=dict(l=20, r=20, t=40, b=20)
+    )
+    return fig
 
 def query_string_network(genes, species, required_score=400):
     if not genes or len(genes) < 2: return pd.DataFrame(), pd.DataFrame()
