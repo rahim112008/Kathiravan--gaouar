@@ -1,6 +1,6 @@
 """analyses.py — Structure, sélection, GWAS, annotation"""
 from __future__ import annotations
-import io, json, time
+import io, json, time, re
 from urllib.parse import quote
 import numpy as np
 import pandas as pd
@@ -600,7 +600,6 @@ def run_vep_api(snp_list, species, batch=200):
     for i in range(0, len(snp_list), batch):
         chunk = snp_list[i:i + batch]
         try:
-            # CORRECTION : Timeout augmenté à 120 secondes
             r = requests.post(url, headers=headers,
                               data=json.dumps({"variants": chunk}), timeout=120)
             if r.status_code == 200:
@@ -619,7 +618,7 @@ def run_vep_api(snp_list, species, batch=200):
                                         "CONSEQUENCE": "N/A", "IMPACT": "MODIFIER",
                                         "AMINO_ACID_CHANGE": "N/A"})
         except Exception as e:
-            st.warning(f"⚠️ VEP batch {i // batch + 1} : Le serveur Ensembl a mis trop de temps à répondre. Essayez plus tard.")
+            st.warning(f"⚠️ VEP batch {i // batch + 1} : Timeout.")
         time.sleep(0.5)
     return pd.DataFrame(results)
 
@@ -732,46 +731,95 @@ def lift_over(chrom, bp, species_to="human"):
     except Exception: pass
     return None, None
 
+# ============================================================
+# CORRECTION DE parse_gff3 (Dictionnaire VicPac4 intégré)
+# ============================================================
 def parse_gff3(b):
     from core import _rt as _rt_core
     genes = []
+    
+    # Dictionnaire exact des accessions NCBI pour VicPac4 (GCF_048564905.1)
+    ref_dict = {
+        'NC_089366.1': '1', 'NC_089367.1': '2', 'NC_089368.1': '3', 'NC_089369.1': '4',
+        'NC_089370.1': '5', 'NC_089371.1': '6', 'NC_089372.1': '7', 'NC_089373.1': '8',
+        'NC_089374.1': '9', 'NC_089375.1': '10', 'NC_089376.1': '11', 'NC_089377.1': '12',
+        'NC_089378.1': '13', 'NC_089379.1': '14', 'NC_089380.1': '15', 'NC_089381.1': '16',
+        'NC_089382.1': '17', 'NC_089383.1': '18', 'NC_089384.1': '19', 'NC_089385.1': '20',
+        'NC_089386.1': '21', 'NC_089387.1': '22', 'NC_089388.1': '23', 'NC_089389.1': '24',
+        'NC_089390.1': '25', 'NC_089391.1': '26', 'NC_089392.1': '27', 'NC_089393.1': '28',
+        'NC_089394.1': '29', 'NC_089395.1': '30', 'NC_089396.1': '31', 'NC_089397.1': '32',
+        'NC_089398.1': '33', 'NC_089399.1': '34', 'NC_089400.1': '35', 'NC_089401.1': '36',
+        'NC_089402.1': '37', 'NC_089403.1': '38', 'NC_089404.1': 'X', 'NC_089405.1': 'Y',
+        'NC_089406.1': 'MT'
+    }
+    
     for line in _rt_core(b).splitlines():
         if line.startswith("#") or not line.strip(): continue
         p = line.split("\t")
         if len(p) >= 9 and p[2] == "gene":
             a = p[8]; name = "Unknown"
+            
+            # Extraction du nom du gène
             if "Name=" in a: name = a.split("Name=")[1].split(";")[0]
             elif 'gene_name "' in a: name = a.split('gene_name "')[1].split('"')[0]
             elif 'gene_id "' in a: name = a.split('gene_id "')[1].split('"')[0]
-            genes.append({"CHR": str(p[0]), "START": int(p[3]),
+            
+            chr_name = str(p[0]) # Ex: "NC_089366.1"
+            
+            # 1. Chercher "chromosome=X" dans les attributs
+            match = re.search(r'chromosome[=:]([0-9A-Za-z]+)', a)
+            if match:
+                chr_name = match.group(1)
+            # 2. Sinon utiliser le dictionnaire
+            elif chr_name in ref_dict:
+                chr_name = ref_dict[chr_name]
+                
+            genes.append({"CHR": chr_name, "START": int(p[3]),
                           "END": int(p[4]), "GENE": name})
+            
     return pd.DataFrame(genes).drop_duplicates(subset=["CHR", "START", "END", "GENE"])
 
 def annotate_genes(snp_df, gff, wk=50):
     w = wk * 1000; res = []
+    
     gff = gff.copy()
     gff["START"] = pd.to_numeric(gff["START"], errors="coerce")
     gff["END"] = pd.to_numeric(gff["END"], errors="coerce")
+    
     for _, s in snp_df.iterrows():
         pos = s.get("BP", s.get("START", 0)); ch = str(s["CHR"])
+        
         gff_chr = gff[gff["CHR"] == ch]
         if gff_chr.empty: continue
+        
         dists = []
         for _, g in gff_chr.iterrows():
             g_start, g_end = g["START"], g["END"]
-            if pos < g_start: dist = g_start - pos
-            elif pos > g_end: dist = pos - g_end
-            else: dist = 0
+            if pos < g_start: 
+                dist = g_start - pos
+            elif pos > g_end: 
+                dist = pos - g_end
+            else: 
+                dist = 0
+            
             dists.append(dist)
+        
         gff_chr["DIST_BP"] = dists
         nearby = gff_chr[gff_chr["DIST_BP"] <= w].sort_values("DIST_BP")
+        
         for _, g in nearby.iterrows():
             res.append({
-                "SNP": s.get("SNP", f"{ch}:{pos}"), "CHR": ch, "SNP_POS": int(pos), 
-                "GENE": g["GENE"], "GENE_START": int(g["START"]), "GENE_END": int(g["END"]),
-                "DIST_BP": int(g["DIST_BP"]), "DIST_KB": round(g["DIST_BP"] / 1000.0, 2),
+                "SNP": s.get("SNP", f"{ch}:{pos}"), 
+                "CHR": ch,
+                "SNP_POS": int(pos), 
+                "GENE": g["GENE"],
+                "GENE_START": int(g["START"]), 
+                "GENE_END": int(g["END"]),
+                "DIST_BP": int(g["DIST_BP"]),
+                "DIST_KB": round(g["DIST_BP"] / 1000.0, 2),
                 "LOCALISATION": "Dans le gène" if g["DIST_BP"] == 0 else f"{round(g['DIST_BP']/1000, 2)} kb"
             })
+            
     return pd.DataFrame(res)
 
 def query_string_network(genes, species, required_score=400):
