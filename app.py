@@ -1,4 +1,4 @@
-"""app.py — NW Camelids Genomics Platform (Version Finale Complète)"""
+"""app.py — NW Camelids Genomics Platform (Version Finale Intelligente)"""
 import gzip, warnings
 import numpy as np
 import pandas as pd
@@ -93,7 +93,7 @@ def main():
             st.session_state.current_species = species_key
             reset_derived()
             st.session_state.gt = st.session_state.ind_df = st.session_state.snp_df = None
-            st.warning("🔄 Mode changé — réinitialisé. Rechargez le PED et les métadonnées.")
+            st.warning("🔄 Mode changé — réinitialisé. Rechargez les fichiers.")
 
         st.divider()
         st.header("🎯 Mode de regroupement")
@@ -126,82 +126,74 @@ def main():
                 if len(data) > 0:
                     map_df = pd.DataFrame(data, columns=['CHR', 'SNP', 'CM', 'BP'])
                     map_df['CHR'] = map_df['CHR'].astype(str).str.replace(r'\.0$', '', regex=True)
-                    
-                    # CORRECTION : Forcer BP et CM à être des nombres
                     map_df['BP'] = pd.to_numeric(map_df['BP'], errors='coerce').fillna(0).astype(int)
                     map_df['CM'] = pd.to_numeric(map_df['CM'], errors='coerce').fillna(0.0)
-                    
                     st.session_state.snp_df = map_df
                     st.success(f"✅ {len(map_df):,} SNP chargés sur {map_df['CHR'].nunique()} chromosomes")
                 else:
-                    st.error("❌ Aucune donnée valide trouvée dans le fichier.")
+                    st.error("❌ Aucune donnée valide.")
             except Exception as e:
                 st.error(f"❌ {e}")
 
         st.divider()
         st.header("🧬 2. Génotypes")
-        gmode = st.radio("Format", ["PED/MAP", "VCF"], horizontal=True)
-        if gmode == "PED/MAP":
-            ped = st.file_uploader(".ped", type=["ped", "txt", "gz"], key="ped_up")
-            if (ped and st.session_state.snp_df is not None
-                    and st.button("📥 Charger PED", use_container_width=True)):
-                try:
-                    with st.spinner("Parsing…"):
-                        gt, ind, a1, a2 = parse_ped(ped.read(), len(st.session_state.snp_df))
-                    snp = st.session_state.snp_df.copy()
-                    if len(snp) > gt.shape[1]: snp = snp.iloc[:gt.shape[1]].reset_index(drop=True)
-                    elif len(snp) < gt.shape[1]: gt = gt[:, :len(snp)]
-                    snp["A1"] = a1; snp["A2"] = a2
-                    reset_derived()
-                    ind = rec_fid(ind)
-                    st.session_state.ind_df_pays = ind.copy()
-                    st.session_state.ind_df_species = None
-                    st.session_state.ind_df_race = None
-                    st.session_state.update({"gt": gt, "ind_df": ind.copy(), "snp_df": snp})
-                    st.success(f"✅ {gt.shape[0]} × {gt.shape[1]}")
-                except Exception as e:
-                    st.error(f"❌ {e}")
-        else:
-            vf = st.file_uploader(".vcf", type=["vcf", "gz"], key="vcf_up")
-            if vf and st.button("📥 Charger VCF", use_container_width=True):
-                try:
-                    gt, ind, snp = parse_vcf(vf.read())
-                    reset_derived()
-                    ind = rec_fid(ind)
-                    st.session_state.ind_df_pays = ind.copy()
-                    st.session_state.update({"gt": gt, "ind_df": ind.copy(), "snp_df": snp})
-                    st.success(f"✅ {gt.shape[0]} × {gt.shape[1]}")
-                except Exception as e:
-                    st.error(f"❌ {e}")
+        ped = st.file_uploader(".ped", type=["ped", "txt", "gz"], key="ped_up")
+        if (ped and st.session_state.snp_df is not None and st.button("📥 Charger PED", use_container_width=True)):
+            try:
+                with st.spinner("Parsing…"):
+                    gt, ind, a1, a2 = parse_ped(ped.read(), len(st.session_state.snp_df))
+                snp = st.session_state.snp_df.copy()
+                if len(snp) > gt.shape[1]: snp = snp.iloc[:gt.shape[1]].reset_index(drop=True)
+                elif len(snp) < gt.shape[1]: gt = gt[:, :len(snp)]
+                snp["A1"] = a1; snp["A2"] = a2
+                reset_derived()
+                ind = rec_fid(ind)
+                st.session_state.ind_df_pays = ind.copy()
+                st.session_state.update({"gt": gt, "ind_df": ind.copy(), "snp_df": snp})
+                st.success(f"✅ {gt.shape[0]} × {gt.shape[1]}")
+            except Exception as e:
+                st.error(f"❌ {e}")
 
         # ============================================================
-        # METADONNEES (Correction avec le fichier Excel exact)
+        # LECTURE ULTRA-ROBUSTE DE L'EXCEL (Feuille 1 pour IDs, Feuille 2 pour Métadonnées)
         # ============================================================
         st.divider()
-        st.header("📋 2.5 Métadonnées (Espèces)")
+        st.header("📋 2.5 Métadonnées (Espèces / Races)")
         meta_file = st.file_uploader("NWC_Meta_Sample_Details_Suheil.xlsx", type=["xlsx", "csv"], key="meta_up")
         
         if meta_file and st.session_state.ind_df_pays is not None:
             try:
                 if meta_file.name.endswith(".xlsx"):
-                    # LECTURE DE LA DEUXIEME FEUILLE !
-                    df_excel = pd.read_excel(meta_file, sheet_name="Sample_Details")
+                    # 1. Feuille 1 (IDs sûrs à 100%)
+                    df1 = pd.read_excel(meta_file, sheet_name="Tabelle1")
+                    df1['ID_Clean'] = df1.iloc[:, 0].astype(str).str.strip().str.upper().str.replace('.CEL', '', regex=False)
+                    
+                    # 2. Feuille 2 (Métadonnées par position de colonne)
+                    df2 = pd.read_excel(meta_file, sheet_name="Sample_Details")
+                    # Colonne A=0, M=12 (Pays), P=15 (Espèce), R=17 (Race)
+                    meta2 = pd.DataFrame({
+                        'ID_Meta': df2.iloc[:, 0],
+                        'Pays': df2.iloc[:, 12],
+                        'Espece': df2.iloc[:, 15],
+                        'Race': df2.iloc[:, 17]
+                    })
+                    meta2['ID_Clean'] = meta2['ID_Meta'].astype(str).str.strip().str.upper().str.replace('.CEL', '', regex=False)
+                    
+                    # 3. Fusion parfaite (on garde les 374 IDs de la Feuille 1 et on ajoute les infos)
+                    meta = df1[['ID_Clean']].merge(meta2[['ID_Clean', 'Pays', 'Espece', 'Race']], on='ID_Clean', how='left')
+                    meta = meta.drop_duplicates(subset=['ID_Clean'])
                 else:
                     df_excel = pd.read_csv(meta_file)
-                
-                # On récupère la 1ère colonne (Nom du fichier)
-                id_col = df_excel.columns[0]
-                df_excel['ID_Clean'] = df_excel[id_col].astype(str).str.strip().str.upper().str.replace('.CEL', '', regex=False)
-                
-                # On sélectionne directement les colonnes officielles
-                # Colonne M : Country Name, Colonne P : Species, Colonne R : Breed
-                meta = df_excel[['ID_Clean', 'Country Name', 'Species', 'Breed']].copy()
-                meta.columns = ['ID_Clean', 'Pays', 'Espece', 'Race']
-                
-                # On supprime les lignes vides (le bas du tableau Excel)
-                meta = meta.dropna(subset=['Espece', 'Race'])
-                meta = meta.drop_duplicates(subset=['ID_Clean'])
+                    meta = pd.DataFrame({
+                        'ID_Meta': df_excel.iloc[:, 0],
+                        'Pays': df_excel.iloc[:, 12],
+                        'Espece': df_excel.iloc[:, 15],
+                        'Race': df_excel.iloc[:, 17]
+                    })
+                    meta['ID_Clean'] = meta['ID_Meta'].astype(str).str.strip().str.upper().str.replace('.CEL', '', regex=False)
+                    meta = meta.drop_duplicates(subset=['ID_Clean'])
 
+                # Diagnostic
                 with st.expander("🔍 Voir le diagnostic des IDs", expanded=False):
                     iid_ped = st.session_state.ind_df_pays["IID"].astype(str).str.replace(".CEL", "", regex=False).str.strip().str.upper()
                     iid_excel = meta["ID_Clean"].astype(str)
@@ -212,28 +204,23 @@ def main():
                     ind_pays = st.session_state.ind_df_pays.copy()
                     ind_pays["IID_clean"] = ind_pays["IID"].astype(str).str.replace(".CEL", "", regex=False).str.strip().str.upper()
                     
-                    # Fusion
-                    ind_merged = ind_pays.merge(meta[['ID_Clean', 'Pays', 'Espece', 'Race']], left_on="IID_clean", right_on="ID_Clean", how="left")
+                    ind_merged = ind_pays.merge(meta, left_on="IID_clean", right_on="ID_Clean", how="left")
 
+                    # Remplissage des vides
                     ind_merged["Pays"] = ind_merged["Pays"].fillna("Inconnu")
                     ind_merged["Espece"] = ind_merged["Espece"].fillna("Inconnu")
                     ind_merged["Race"] = ind_merged["Race"].fillna("Inconnu")
 
                     # Création des bases pour les 3 modes
-                    ind_pays_out = ind_merged.copy()
-                    ind_pays_out["FID"] = ind_pays_out["Pays"]
-                    
-                    ind_species = ind_merged.copy()
-                    ind_species["FID"] = ind_species["Espece"]
-                    
-                    ind_race = ind_merged.copy()
-                    ind_race["FID"] = ind_race["Race"]
+                    ind_pays_out = ind_merged.copy(); ind_pays_out["FID"] = ind_pays_out["Pays"]
+                    ind_species = ind_merged.copy(); ind_species["FID"] = ind_species["Espece"]
+                    ind_race = ind_merged.copy(); ind_race["FID"] = ind_race["Race"]
 
                     st.session_state.ind_df_pays = ind_pays_out
                     st.session_state.ind_df_species = ind_species
                     st.session_state.ind_df_race = ind_race
                     
-                    # Filtrage selon le mode sélectionné
+                    # Filtrage auto selon le menu
                     if species_key != "🌍 Toutes les espèces (Global)":
                         espece_cible = None
                         if "Alpaga" in species_key: espece_cible = "Alpaca"
@@ -244,7 +231,6 @@ def main():
                         if espece_cible:
                             mask = ind_species["Espece"] == espece_cible
                             n_isolated = mask.sum()
-                            
                             if n_isolated > 0:
                                 st.session_state.gt = st.session_state.gt[mask.values, :]
                                 st.session_state.ind_df = ind_species[mask].copy()
@@ -259,14 +245,13 @@ def main():
                         else:
                             st.session_state.ind_df = ind_pays_out.copy()
 
-                    st.success("✅ Métadonnées liées !")
-                    st.write("**Répartition par Espèce :**")
-                    st.write(ind_species["Espece"].value_counts())
-                    st.write("**Répartition par Race :**")
-                    st.write(ind_race["Race"].value_counts())
-                    
+                    st.success("✅ Métadonnées liées avec succès !")
+                    st.write("**Répartition par Espèce (Officielle) :**")
+                    st.dataframe(ind_species["Espece"].value_counts().reset_index(), use_container_width=True)
+                    st.write("**Répartition par Race (Officielle) :**")
+                    st.dataframe(ind_race["Race"].value_counts().reset_index(), use_container_width=True)
             except Exception as e:
-                st.error(f"❌ Erreur : {e}")
+                st.error(f"❌ Erreur Excel : {e}")
 
         st.divider()
         st.header("⚙️ 3. Seuils QC")
@@ -284,11 +269,10 @@ def main():
     st.caption(f"Référence **{REFERENCE['name']}** · Groupement : **{current_mode}**")
 
     if st.session_state.gt is None:
-        st.info("👋 Chargez `.map` et `.ped` pour commencer.")
+        st.info("👋 Chargez `.map`, `.ped` et `.xlsx` pour commencer.")
         return
-
     if st.session_state.ind_df is None:
-        st.warning("⚠️ Aucun regroupement actif. Rechargez le PED.")
+        st.warning("⚠️ Veuillez lier les métadonnées (étape 2.5) pour activer les analyses.")
         return
 
     TABS = st.tabs([
@@ -302,19 +286,18 @@ def main():
 
     with TABS[0]:
         c1, c2, c3, c4 = st.columns(4)
-        c1.metric("Individus",   st.session_state.gt.shape[0])
-        c2.metric("SNP",         st.session_state.gt.shape[1])
+        c1.metric("Individus", st.session_state.gt.shape[0])
+        c2.metric("SNP", st.session_state.gt.shape[1])
         c3.metric("Chromosomes", st.session_state.snp_df["CHR"].nunique())
-        c4.metric("Groupes",     st.session_state.ind_df["FID"].nunique())
+        c4.metric("Groupes", st.session_state.ind_df["FID"].nunique())
         
         ch = st.session_state.snp_df["CHR"].astype(str).value_counts()
         ch = ch.reindex(sorted(ch.index, key=lambda x: (len(x), x)))
-        
-        fig_ch = px.bar(x=ch.index, y=ch.values, labels={"x": "Chromosome", "y": "Nb SNP"}, title="Nombre de SNP par chromosome")
+        fig_ch = px.bar(x=ch.index, y=ch.values, labels={"x": "Chromosome", "y": "Nb SNP"}, title="SNP par chromosome")
         fig_ch.update_xaxes(type='category')
         st.plotly_chart(fig_ch, use_container_width=True)
         
-        st.subheader(f"📋 Répartition par {current_mode}")
+        st.subheader(f"📋 Répartition exacte par {current_mode}")
         st.dataframe(st.session_state.ind_df["FID"].value_counts().reset_index(), use_container_width=True)
 
     with TABS[1]:
@@ -339,7 +322,7 @@ def main():
             if st.button("▶ LD Pruning", key="ld_btn"):
                 keep = ld_pruning(st.session_state.gt_filt, 50, 5, ld_r2)
                 st.session_state.update({"gt_pruned": st.session_state.gt_filt[:, keep], "snp_pruned": st.session_state.snp_filt[keep].reset_index(drop=True)})
-                st.success(f"✅ {st.session_state.gt_pruned.shape[1]} SNP")
+                st.success(f"✅ {st.session_state.gt_pruned.shape[1]} SNP conservés")
             if st.session_state.gt_pruned is not None:
                 if st.button("▶ LD Decay", key="ld_decay_btn"):
                     st.session_state.ld_df = ld_decay(st.session_state.gt_pruned, st.session_state.snp_pruned)
@@ -354,7 +337,7 @@ def main():
                 st.session_state.update({"pca_s": s, "pca_v": v})
                 st.session_state.mds_c = mds_analysis(gu, 5)
                 st.session_state.king_K = king_mat(gu)
-                st.success("✅")
+                st.success("✅ Calculs terminés")
             except Exception as e:
                 st.error(f"❌ {e}")
         if st.session_state.pca_s is not None:
@@ -369,7 +352,7 @@ def main():
                     gu = st.session_state.gt_pruned if st.session_state.gt_pruned is not None else st.session_state.gt_filt
                     Q, _ = admixture_nmf(gu, K=K)
                     st.session_state.update({"admix_Q": Q, "admix_K": K})
-                    st.success("✅")
+                    st.success("✅ Admixture calculé")
                 except Exception as e:
                     st.error(f"❌ {e}")
             if st.session_state.admix_Q is not None:
@@ -384,7 +367,7 @@ def main():
                     su = st.session_state.snp_pruned if st.session_state.snp_pruned is not None else st.session_state.snp_filt
                     roh, fr = detect_roh(gu, su[["CHR", "BP"]].to_json())
                     st.session_state.update({"roh_df": roh, "froh": fr})
-                    st.success(f"✅ {len(roh)} ROH")
+                    st.success(f"✅ {len(roh)} ROH détectés")
                 except Exception as e:
                     st.error(f"❌ {e}")
             if st.session_state.froh is not None:
@@ -401,7 +384,7 @@ def main():
                     r = upgma_bootstrap(gu, su, lab, n_boot=100)
                     st.session_state.nj_result = r
                     st.session_state.nj_mid = midpoint_info(r["D"], r["pops"])
-                    st.success("✅")
+                    st.success("✅ Arbre généré")
                 except Exception as e:
                     st.error(f"❌ {e}")
             if st.session_state.nj_result is not None:
@@ -418,7 +401,7 @@ def main():
                     st.session_state.fst = fst_snp_wc(gu, lab)
                     M, pops = fst_pairwise(gu, lab, use_wc84=True)
                     st.session_state.update({"fst_M": M, "fst_pops": pops})
-                    st.success("✅")
+                    st.success("✅ FST calculé")
                 except Exception as e:
                     st.error(f"❌ {e}")
             if st.session_state.fst_M is not None:
@@ -431,26 +414,21 @@ def main():
                     w = windowed_fst(gu, su, lab, 50, 25)
                     if "MEAN_FST" not in w.columns:
                         fst_cols = [c for c in w.columns if "FST" in c.upper()]
-                        if fst_cols:
-                            w = w.rename(columns={fst_cols[0]: "MEAN_FST"})
-                        else:
-                            w["MEAN_FST"] = 0.0
-                    
+                        if fst_cols: w = w.rename(columns={fst_cols[0]: "MEAN_FST"})
+                        else: w["MEAN_FST"] = 0.0
                     st.session_state.win_fst = detect_outliers(w, 3.0)
                     st.success(f"✅ {len(w)} fenêtres")
                 except Exception as e:
                     st.error(f"❌ {e}")
             if st.session_state.win_fst is not None:
                 fig_win = plot_win_manh(st.session_state.win_fst, "MEAN_FST", "FST fenêtré")
-                if fig_win is not None:
-                    st.plotly_chart(fig_win, use_container_width=True)
-                else:
-                    st.warning("⚠️ Impossible d'afficher le graphique FST fenêtré (pas assez de données valides).")
+                if fig_win is not None: st.plotly_chart(fig_win, use_container_width=True)
+                else: st.warning("Pas assez de données valides pour le graphique.")
             st.divider()
             st.subheader("CSS")
             if st.button("▶ CSS", key="css_btn"):
                 st.session_state.css_df = composite_score(gu, su, lab)
-                st.success("✅")
+                st.success("✅ CSS calculé")
             if st.session_state.css_df is not None:
                 st.dataframe(st.session_state.css_df.head(20), use_container_width=True)
 
@@ -460,7 +438,7 @@ def main():
             try:
                 mg, _ = match_pheno(st.session_state.ind_filt, load_pheno(pf.read(), pf.name))
                 st.session_state.pheno_df = mg
-                st.success("✅")
+                st.success("✅ Phénotypes chargés")
             except Exception as e:
                 st.error(f"❌ {e}")
         if st.session_state.pheno_df is not None:
@@ -511,7 +489,7 @@ def main():
             try:
                 gff = parse_gff3(gff_f.read())
                 st.session_state.sel_gff = gff
-                st.success(f"✅ {len(gff)} gènes")
+                st.success(f"✅ {len(gff)} gènes trouvés")
                 snps = None
                 if src == "Sélection" and st.session_state.win_fst is not None:
                     snps = st.session_state.win_fst.head(20).rename(columns={"START": "BP", "TOP_SNP": "SNP"})[["SNP", "CHR", "BP"]]
@@ -527,12 +505,9 @@ def main():
 
     with TABS[12]:
         snp_list = []
-        if st.session_state.gwas_res is not None:
-            snp_list = st.session_state.gwas_res.sort_values("P")["SNP"].head(20).tolist()
-        elif st.session_state.win_fst is not None:
-            snp_list = st.session_state.win_fst["TOP_SNP"].head(20).tolist()
-        elif st.session_state.css_df is not None:
-            snp_list = st.session_state.css_df["SNP"].head(20).tolist()
+        if st.session_state.gwas_res is not None: snp_list = st.session_state.gwas_res.sort_values("P")["SNP"].head(20).tolist()
+        elif st.session_state.win_fst is not None: snp_list = st.session_state.win_fst["TOP_SNP"].head(20).tolist()
+        elif st.session_state.css_df is not None: snp_list = st.session_state.css_df["SNP"].head(20).tolist()
         if snp_list and st.button("🔬 Lancer VEP", key="vep_btn"):
             su = st.session_state.snp_pruned if st.session_state.snp_pruned is not None else st.session_state.snp_filt
             inputs = []
@@ -541,13 +516,12 @@ def main():
                 if not row.empty:
                     r = row.iloc[0]; a, b = _ca(r.get("A1")), _ca(r.get("A2"))
                     inputs.append(f"{r['CHR']}:{int(r['BP'])}:{a}:{b}" if a != "0" and b != "0" else f"{r['CHR']}:{int(r['BP'])}-{int(r['BP'])}")
-                else:
-                    inputs.append(str(s))
+                else: inputs.append(str(s))
             vres = run_vep_api(inputs, cfg["vep_species"])
             if not vres.empty:
                 vres["LOCALISATION"] = vres["CONSEQUENCE"].apply(traduction_consequence_vep)
                 st.session_state.vep_res = vres
-                st.success("✅")
+                st.success("✅ VEP terminé")
         if st.session_state.vep_res is not None:
             st.dataframe(st.session_state.vep_res, use_container_width=True)
 
@@ -574,8 +548,7 @@ def main():
             genes = [g for g in st.session_state.vep_res["GENE"].dropna().unique() if g not in ("N/A", "Intergenic/Non-codant", "nan", "")]
         if genes and st.button("🔬 Lancer enrichissement", key="enr_btn"):
             enr = run_enrichment(genes, organism="Human")
-            if not enr.empty:
-                st.dataframe(enr.head(30), use_container_width=True)
+            if not enr.empty: st.dataframe(enr.head(30), use_container_width=True)
 
     with TABS[16]:
         if st.session_state.pheno_df is not None:
@@ -661,18 +634,15 @@ def main():
                     su = st.session_state.snp_pruned if st.session_state.snp_pruned is not None else st.session_state.snp_filt
                     labs = st.session_state.ind_filt["FID"].astype(str).values
                     
-                    m1 = (labs == pop1)
-                    m2 = (labs == pop2)
+                    m1 = (labs == pop1); m2 = (labs == pop2)
                     
                     if m1.sum() > 0 and m2.sum() > 0:
-                        sub_gt = gu[m1 | m2]
-                        sub_lab = labs[m1 | m2]
+                        sub_gt = gu[m1 | m2]; sub_lab = labs[m1 | m2]
                         fst_m, _ = fst_pairwise(sub_gt, sub_lab)
                         st.metric(f"FST entre {pop1} et {pop2}", f"{fst_m[0,1]:.4f}")
                         
                         g1 = gu[m1]; g2 = gu[m2]
-                        p1 = np.nanmean(g1, axis=0) / 2.0
-                        p2 = np.nanmean(g2, axis=0) / 2.0
+                        p1 = np.nanmean(g1, axis=0) / 2.0; p2 = np.nanmean(g2, axis=0) / 2.0
                         
                         fixed_diff = ((p1 >= 0.99) & (p2 <= 0.01)) | ((p1 <= 0.01) & (p2 >= 0.99))
                         n_fixed = np.sum(fixed_diff)
@@ -685,8 +655,6 @@ def main():
                             st.dataframe(df_fixed[["CHR", "SNP", "BP", "Freq_"+pop1, "Freq_"+pop2]], use_container_width=True)
                     else:
                         st.error("Un des groupes n'a pas d'individus.")
-            else:
-                st.warning("Vous devez avoir au moins 2 groupes pour comparer.")
 
     with TABS[22]:
         st.subheader("🧬 Carte de chaleur du Déséquilibre de Liaison (LD)")
@@ -696,25 +664,18 @@ def main():
             
             chroms = sorted(su["CHR"].astype(str).unique())
             sel_chr = st.selectbox("Choisir un chromosome", chroms, key="ld_chr")
-            
             idx_chr = su[su["CHR"].astype(str) == sel_chr].index
-            if len(idx_chr) > 100:
-                idx_chr = idx_chr[:100] 
+            if len(idx_chr) > 100: idx_chr = idx_chr[:100] 
                 
             if len(idx_chr) > 1:
                 gt_chr = gu[:, idx_chr]
                 X = np.nan_to_num(gt_chr, nan=np.nanmean(gt_chr, axis=0))
-                
                 valid_cols = X.std(axis=0) > 1e-9
                 X_val = X[:, valid_cols]
                 if X_val.shape[1] > 1:
                     with np.errstate(divide='ignore', invalid='ignore'):
                         corr_matrix = np.corrcoef(X_val.T) ** 2
-                    
-                    fig = px.imshow(corr_matrix, 
-                                    color_continuous_scale="Reds", 
-                                    labels=dict(color="r²"),
-                                    title=f"Blocs de LD - Chromosome {sel_chr} ({len(idx_chr)} SNP)")
+                    fig = px.imshow(corr_matrix, color_continuous_scale="Reds", labels=dict(color="r²"), title=f"Blocs de LD - Chromosome {sel_chr} ({len(idx_chr)} SNP)")
                     st.plotly_chart(fig, use_container_width=True)
                 else:
                     st.info("Pas assez de SNPs variables sur ce chromosome.")
@@ -734,17 +695,10 @@ def main():
                     mask = labs == p
                     sub_gt = gu[mask]
                     if sub_gt.shape[0] == 0: continue
-                    
                     ho = np.nanmean(np.nanmean(sub_gt == 1, axis=0))
                     p_freq = np.nanmean(sub_gt, axis=0) / 2.0
                     maf = np.nanmean(np.minimum(p_freq, 1 - p_freq))
-                    
-                    results.append({
-                        "Population": p,
-                        "N": sub_gt.shape[0],
-                        "Ho (Hétérozygotie)": round(float(ho), 4),
-                        "MAF moyen": round(float(maf), 4)
-                    })
+                    results.append({"Population": p, "N": sub_gt.shape[0], "Ho (Hétérozygotie)": round(float(ho), 4), "MAF moyen": round(float(maf), 4)})
                 
                 df_res = pd.DataFrame(results)
                 st.dataframe(df_res, use_container_width=True)
