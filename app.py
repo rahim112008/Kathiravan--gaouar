@@ -467,7 +467,6 @@ def main():
                 except Exception as e:
                     st.error(f"❌ {e}")
 
-    # --- 11 ANNOTATION ---
     with TABS[11]:
         st.subheader("🧬 Annotation des SNP candidats")
         gff_f = st.file_uploader("GFF3/GTF (VicPac4)", type=["gff", "gff3", "gtf", "gz"], key="ann_gff")
@@ -527,57 +526,42 @@ def main():
             
             st.subheader("🎯 Représentation visuelle")
             
-            # Sélection du SNP à visualiser
             snps_uniques = df_res["SNP"].unique().tolist()
             snp_choisi = st.selectbox("Choisissez le SNP à visualiser :", snps_uniques)
             
-            # Filtrer le DataFrame pour le SNP choisi
             df_snp = df_res[df_res["SNP"] == snp_choisi]
-            top_assoc = df_snp.iloc[0] # On prend la première association de ce SNP
+            top_assoc = df_snp.iloc[0] 
             
-            # Création de la figure
             fig = plot_gene_snp(top_assoc, top_assoc, unit=unit)
             st.plotly_chart(fig, use_container_width=True)
             
             st.download_button("⬇ Télécharger (CSV)", df_res.to_csv(index=False).encode(), "annotation_genes.csv", "text/csv")
 
     with TABS[12]:
-        st.subheader("🔬 VEP & NCBI")
-        snp_list = []
-        if st.session_state.gwas_res is not None: snp_list = st.session_state.gwas_res.sort_values("P")["SNP"].head(20).tolist()
-        elif st.session_state.win_fst is not None: snp_list = st.session_state.win_fst["TOP_SNP"].head(20).tolist()
-        elif st.session_state.css_df is not None: snp_list = st.session_state.css_df["SNP"].head(20).tolist()
+        st.subheader("🔬 VEP & NCBI (VicPac4)")
+        st.info("💡 L'API Ensembl n'est pas encore à jour pour VicPac4. Nous utilisons l'API officielle NCBI (source de VicPac4) pour récupérer les informations des gènes.")
         
-        if not snp_list:
-            st.info("Veuillez lancer une analyse (GWAS, FST ou CSS) pour obtenir des SNP à envoyer au VEP.")
+        genes_to_search = []
+        if st.session_state.ann_df is not None and not st.session_state.ann_df.empty:
+            genes_to_search = st.session_state.ann_df["GENE"].unique().tolist()
+            st.write(f"**Gènes trouvés dans l'annotation :** {', '.join(genes_to_search[:10])}...")
         else:
-            if st.button("🔬 Lancer VEP (Ensembl)", key="vep_btn"):
-                su = st.session_state.snp_pruned if st.session_state.snp_pruned is not None else st.session_state.snp_filt
-                inputs = []
-                for s in snp_list:
-                    row = su[su["SNP"].astype(str) == str(s)]
-                    if not row.empty:
-                        r = row.iloc[0]; a, b = _ca(r.get("A1")), _ca(r.get("A2"))
-                        # Format Ensembl : chr:pos:ref:alt
-                        if a != "0" and b != "0":
-                            inputs.append(f"{r['CHR']}:{int(r['BP'])}:{a}:{b}")
-                        else:
-                            inputs.append(f"{r['CHR']}:{int(r['BP'])}-{int(r['BP'])}")
-                    else: 
-                        inputs.append(str(s))
-                
-                with st.spinner("Connexion à l'API Ensembl en cours (cela peut prendre 1 à 2 minutes)..."):
-                    vres = run_vep_api(inputs, cfg["vep_species"])
+            st.warning("⚠️ Aucune annotation trouvée. Allez d'abord dans l'onglet 'Annotation' pour générer des associations SNP-Gène.")
+            
+        if genes_to_search:
+            if st.button("🔬 Récupérer les infos NCBI pour ces gènes", key="ncbi_btn"):
+                with st.spinner("Connexion à l'API NCBI en cours..."):
+                    ncbi_res = fetch_ncbi_gene_info(genes_to_search, taxon=cfg["taxon"])
                     
-                if not vres.empty:
-                    vres["LOCALISATION"] = vres["CONSEQUENCE"].apply(traduction_consequence_vep)
-                    st.session_state.vep_res = vres
-                    st.success("✅ VEP terminé avec succès")
+                if not ncbi_res.empty:
+                    st.session_state.ncbi_gene_res = ncbi_res
+                    st.success("✅ Informations NCBI récupérées avec succès !")
                 else:
-                    st.error("❌ L'API n'a pas retourné de résultats. Vérifiez votre connexion ou réessayez plus tard.")
+                    st.error("❌ L'API NCBI n'a pas retourné de résultats.")
                     
-        if st.session_state.vep_res is not None:
-            st.dataframe(st.session_state.vep_res, use_container_width=True)
+        if st.session_state.ncbi_gene_res is not None:
+            st.dataframe(st.session_state.ncbi_gene_res, use_container_width=True)
+            st.download_button("⬇ Télécharger (CSV)", st.session_state.ncbi_gene_res.to_csv(index=False).encode(), "genes_ncbi.csv", "text/csv")
 
     with TABS[13]:
         genes = []
