@@ -33,7 +33,7 @@ _KEYS = [
     "gebv_df", "gblup_stats",
     "vep_res", "ncbi_gene_res", "sel_ann", "sel_gff", "ann_df",
     "mapping_df", "pair_res", "current_species", "grouping_mode",
-    "ind_df_pays", "ind_df_species",
+    "ind_df_pays", "ind_df_species", "ind_df_race",
 ]
 for _k in _KEYS:
     if _k not in st.session_state:
@@ -42,7 +42,7 @@ for _k in _KEYS:
 def reset_derived():
     for k in _KEYS:
         if k not in ("gt", "ind_df", "snp_df", "current_species",
-                     "grouping_mode", "ind_df_pays", "ind_df_species"):
+                     "grouping_mode", "ind_df_pays", "ind_df_species", "ind_df_race"):
             st.session_state[k] = None
 
 @st.cache_data(show_spinner=False)
@@ -99,15 +99,10 @@ def main():
         st.header("🎯 Mode de regroupement")
         grouping_mode = st.radio(
             "Regrouper les analyses par :",
-            ["🌍 Par Pays (ARG, BOL, PER, USA)", "🦙 Par Espèce (Alpaga, Guanaco, ...)"],
+            ["🌍 Par Pays", "🦙 Par Espèce", "🏷️ Par Race (Huacaya, Suri...)"],
             index=0,
         )
         st.session_state.grouping_mode = grouping_mode
-
-        if grouping_mode.startswith("🌍") and st.session_state.get("ind_df_pays") is not None:
-            st.session_state.ind_df = st.session_state.ind_df_pays.copy()
-        elif grouping_mode.startswith("🦙") and st.session_state.get("ind_df_species") is not None:
-            st.session_state.ind_df = st.session_state.ind_df_species.copy()
 
         st.divider()
         st.header("📁 1. Annotations SNP")
@@ -161,6 +156,7 @@ def main():
                     ind = rec_fid(ind)
                     st.session_state.ind_df_pays = ind.copy()
                     st.session_state.ind_df_species = None
+                    st.session_state.ind_df_race = None
                     st.session_state.update({"gt": gt, "ind_df": ind.copy(), "snp_df": snp})
                     st.success(f"✅ {gt.shape[0]} × {gt.shape[1]}")
                 except Exception as e:
@@ -178,6 +174,9 @@ def main():
                 except Exception as e:
                     st.error(f"❌ {e}")
 
+        # ============================================================
+        # METADONNEES (Correction avec le fichier Excel exact)
+        # ============================================================
         st.divider()
         st.header("📋 2.5 Métadonnées (Espèces)")
         meta_file = st.file_uploader("NWC_Meta_Sample_Details_Suheil.xlsx", type=["xlsx", "csv"], key="meta_up")
@@ -185,28 +184,22 @@ def main():
         if meta_file and st.session_state.ind_df_pays is not None:
             try:
                 if meta_file.name.endswith(".xlsx"):
-                    df_excel = pd.read_excel(meta_file)
+                    # LECTURE DE LA DEUXIEME FEUILLE !
+                    df_excel = pd.read_excel(meta_file, sheet_name="Sample_Details")
                 else:
                     df_excel = pd.read_csv(meta_file)
                 
+                # On récupère la 1ère colonne (Nom du fichier)
                 id_col = df_excel.columns[0]
                 df_excel['ID_Clean'] = df_excel[id_col].astype(str).str.strip().str.upper().str.replace('.CEL', '', regex=False)
                 
-                df_excel['Code_Pays'] = df_excel['ID_Clean'].str.split('_').str[0]
-                df_excel['Code_Espece'] = df_excel['ID_Clean'].str.split('_').str[1]
+                # On sélectionne directement les colonnes officielles
+                # Colonne M : Country Name, Colonne P : Species, Colonne R : Breed
+                meta = df_excel[['ID_Clean', 'Country Name', 'Species', 'Breed']].copy()
+                meta.columns = ['ID_Clean', 'Pays', 'Espece', 'Race']
                 
-                dict_especes = {
-                    'ALG': 'Alpaga', 'PAH': 'Alpaga', 'BAH': 'Alpaga', 'PAS': 'Alpaga', 'BAS': 'Alpaga',
-                    'BLL': 'Lama', 'ALL': 'Lama', 'ULP': 'Lama',
-                    'BVM': 'Vigogne', 'AVS': 'Vigogne', 'UVV': 'Vigogne', 'BVV': 'Vigogne', 'BVS': 'Vigogne',
-                    'CLG': 'Guanaco'
-                }
-                dict_pays = {'ARG': 'Argentine', 'BOL': 'Bolivie', 'PER': 'Pérou', 'USA': 'USA', 'CHL': 'Chili'}
-                
-                df_excel['Espece_Propre'] = df_excel['Code_Espece'].map(dict_especes).fillna('Autre')
-                df_excel['Pays_Propre'] = df_excel['Code_Pays'].map(dict_pays).fillna('Autre')
-                
-                meta = df_excel[['ID_Clean', 'Espece_Propre', 'Pays_Propre']].copy()
+                # On supprime les lignes vides (le bas du tableau Excel)
+                meta = meta.dropna(subset=['Espece', 'Race'])
                 meta = meta.drop_duplicates(subset=['ID_Clean'])
 
                 with st.expander("🔍 Voir le diagnostic des IDs", expanded=False):
@@ -219,29 +212,37 @@ def main():
                     ind_pays = st.session_state.ind_df_pays.copy()
                     ind_pays["IID_clean"] = ind_pays["IID"].astype(str).str.replace(".CEL", "", regex=False).str.strip().str.upper()
                     
-                    ind_merged = ind_pays.merge(meta[['ID_Clean', 'Espece_Propre', 'Pays_Propre']], left_on="IID_clean", right_on="ID_Clean", how="left")
+                    # Fusion
+                    ind_merged = ind_pays.merge(meta[['ID_Clean', 'Pays', 'Espece', 'Race']], left_on="IID_clean", right_on="ID_Clean", how="left")
 
-                    ind_merged["Espece_Propre"] = ind_merged["Espece_Propre"].fillna("Autre")
-                    ind_merged["Pays_Propre"] = ind_merged["Pays_Propre"].fillna("Autre")
+                    ind_merged["Pays"] = ind_merged["Pays"].fillna("Inconnu")
+                    ind_merged["Espece"] = ind_merged["Espece"].fillna("Inconnu")
+                    ind_merged["Race"] = ind_merged["Race"].fillna("Inconnu")
 
-                    ind_species = ind_merged.copy()
-                    ind_species["FID"] = ind_species["Espece_Propre"]
-                    
+                    # Création des bases pour les 3 modes
                     ind_pays_out = ind_merged.copy()
-                    ind_pays_out["FID"] = ind_pays_out["Pays_Propre"]
-
-                    st.session_state.ind_df_species = ind_species
-                    st.session_state.ind_df_pays = ind_pays_out
+                    ind_pays_out["FID"] = ind_pays_out["Pays"]
                     
+                    ind_species = ind_merged.copy()
+                    ind_species["FID"] = ind_species["Espece"]
+                    
+                    ind_race = ind_merged.copy()
+                    ind_race["FID"] = ind_race["Race"]
+
+                    st.session_state.ind_df_pays = ind_pays_out
+                    st.session_state.ind_df_species = ind_species
+                    st.session_state.ind_df_race = ind_race
+                    
+                    # Filtrage selon le mode sélectionné
                     if species_key != "🌍 Toutes les espèces (Global)":
                         espece_cible = None
-                        if "Alpaga" in species_key: espece_cible = "Alpaga"
-                        elif "Lama" in species_key: espece_cible = "Lama"
+                        if "Alpaga" in species_key: espece_cible = "Alpaca"
+                        elif "Lama" in species_key: espece_cible = "Llama"
                         elif "Guanaco" in species_key: espece_cible = "Guanaco"
-                        elif "Vigogne" in species_key: espece_cible = "Vigogne"
+                        elif "Vigogne" in species_key: espece_cible = "Vicugna"
                         
                         if espece_cible:
-                            mask = ind_species["Espece_Propre"] == espece_cible
+                            mask = ind_species["Espece"] == espece_cible
                             n_isolated = mask.sum()
                             
                             if n_isolated > 0:
@@ -251,14 +252,19 @@ def main():
                             else:
                                 st.error(f"❌ Aucun animal trouvé pour {espece_cible}.")
                     else:
-                        if grouping_mode.startswith("🦙"):
+                        if grouping_mode.startswith("🏷️"):
+                            st.session_state.ind_df = ind_race.copy()
+                        elif grouping_mode.startswith("🦙"):
                             st.session_state.ind_df = ind_species.copy()
                         else:
                             st.session_state.ind_df = ind_pays_out.copy()
 
                     st.success("✅ Métadonnées liées !")
                     st.write("**Répartition par Espèce :**")
-                    st.write(ind_species["Espece_Propre"].value_counts())
+                    st.write(ind_species["Espece"].value_counts())
+                    st.write("**Répartition par Race :**")
+                    st.write(ind_race["Race"].value_counts())
+                    
             except Exception as e:
                 st.error(f"❌ Erreur : {e}")
 
@@ -435,7 +441,11 @@ def main():
                 except Exception as e:
                     st.error(f"❌ {e}")
             if st.session_state.win_fst is not None:
-                st.plotly_chart(plot_win_manh(st.session_state.win_fst, "MEAN_FST", "FST fenêtré"), use_container_width=True)
+                fig_win = plot_win_manh(st.session_state.win_fst, "MEAN_FST", "FST fenêtré")
+                if fig_win is not None:
+                    st.plotly_chart(fig_win, use_container_width=True)
+                else:
+                    st.warning("⚠️ Impossible d'afficher le graphique FST fenêtré (pas assez de données valides).")
             st.divider()
             st.subheader("CSS")
             if st.button("▶ CSS", key="css_btn"):
@@ -676,7 +686,7 @@ def main():
                     else:
                         st.error("Un des groupes n'a pas d'individus.")
             else:
-                st.warning("Vous devez être en mode Global (toutes les espèces) pour comparer 2 groupes.")
+                st.warning("Vous devez avoir au moins 2 groupes pour comparer.")
 
     with TABS[22]:
         st.subheader("🧬 Carte de chaleur du Déséquilibre de Liaison (LD)")
