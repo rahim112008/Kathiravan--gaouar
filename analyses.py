@@ -64,8 +64,6 @@ def admixture_nmf(gt, K=3, seed=42):
     s = W.sum(1, keepdims=True); s[s == 0] = 1.0
     return W / s, m.components_
 
-# --- FONCTIONS DE STRUCTURE (CORRIGÉES POUR STREAMLIT) ---
-
 @st.cache_data(show_spinner=False)
 def upgma_bootstrap(gt, snp_df, _labels, n_boot=100, seed=42):
     labels = np.asarray(_labels).astype(str)
@@ -221,8 +219,6 @@ def composite_score(gt, snp_df, _labels):
     df["CSS"] = np.abs(df["Z_FST"] * df["Z_HOM"])
     return df.sort_values("CSS", ascending=False).reset_index(drop=True)
 
-# --- FONCTIONS DE DÉMOGRAPHIE ET LD ---
-
 @st.cache_data(show_spinner=False)
 def detect_roh(gt, snp_json, min_snps=30, min_kb=500.0):
     snp = pd.read_json(io.StringIO(snp_json))
@@ -314,8 +310,6 @@ def ld_decay(gt, snp_df, max_kb=1000, max_snp=3000):
     df["bin"] = pd.cut(df["dist_kb"], bins=bins, labels=False, include_lowest=True)
     return df.groupby("bin").agg(dist_kb=("dist_kb", "mean"), r2=("r2", "mean"),
                                   count=("r2", "count")).dropna().sort_values("dist_kb").reset_index(drop=True)
-
-# --- FONCTIONS DE PLOT ---
 
 def plot_pca(s, v, l):
     return px.scatter(pd.DataFrame({"PC1": s[:, 0], "PC2": s[:, 1], "Pop": l}),
@@ -426,8 +420,6 @@ def plot_gblup(df):
                                      name="OLS", line=dict(color="red", dash="dash")))
         except Exception: pass
     return fig
-
-# --- FONCTIONS GWAS ET GBLUP ---
 
 def _logistic_irls(X, y, max_iter=25, tol=1e-6):
     beta = np.zeros(X.shape[1])
@@ -587,8 +579,6 @@ def run_gblup(gt, pheno, kf=5):
            {"h2": bh, "corr": corr, "r2": corr ** 2,
             "rmse": float(np.sqrt(np.mean((Y - yp) ** 2)))}
 
-# --- FONCTIONS D'ANNOTATION ---
-
 _SEVERITY = {"HIGH": 4, "MODERATE": 3, "LOW": 2, "MODIFIER": 1}
 
 def traduire_consequence_vep(c):
@@ -610,8 +600,9 @@ def run_vep_api(snp_list, species, batch=200):
     for i in range(0, len(snp_list), batch):
         chunk = snp_list[i:i + batch]
         try:
+            # CORRECTION : Timeout augmenté à 120 secondes
             r = requests.post(url, headers=headers,
-                              data=json.dumps({"variants": chunk}), timeout=60)
+                              data=json.dumps({"variants": chunk}), timeout=120)
             if r.status_code == 200:
                 for item in r.json():
                     sid = item.get("input", "N/A")
@@ -628,7 +619,7 @@ def run_vep_api(snp_list, species, batch=200):
                                         "CONSEQUENCE": "N/A", "IMPACT": "MODIFIER",
                                         "AMINO_ACID_CHANGE": "N/A"})
         except Exception as e:
-            st.warning(f"⚠️ VEP batch {i // batch + 1}: {e}")
+            st.warning(f"⚠️ VEP batch {i // batch + 1} : Le serveur Ensembl a mis trop de temps à répondre. Essayez plus tard.")
         time.sleep(0.5)
     return pd.DataFrame(results)
 
@@ -757,50 +748,30 @@ def parse_gff3(b):
     return pd.DataFrame(genes).drop_duplicates(subset=["CHR", "START", "END", "GENE"])
 
 def annotate_genes(snp_df, gff, wk=50):
-    """
-    Trouve les gènes les plus proches des SNPs.
-    Calcule la vraie distance (0 si le SNP est dans le gène).
-    """
     w = wk * 1000; res = []
-    
     gff = gff.copy()
     gff["START"] = pd.to_numeric(gff["START"], errors="coerce")
     gff["END"] = pd.to_numeric(gff["END"], errors="coerce")
-    
     for _, s in snp_df.iterrows():
         pos = s.get("BP", s.get("START", 0)); ch = str(s["CHR"])
-        
         gff_chr = gff[gff["CHR"] == ch]
         if gff_chr.empty: continue
-        
         dists = []
         for _, g in gff_chr.iterrows():
             g_start, g_end = g["START"], g["END"]
-            if pos < g_start: 
-                dist = g_start - pos
-            elif pos > g_end: 
-                dist = pos - g_end
-            else: 
-                dist = 0
-            
+            if pos < g_start: dist = g_start - pos
+            elif pos > g_end: dist = pos - g_end
+            else: dist = 0
             dists.append(dist)
-        
         gff_chr["DIST_BP"] = dists
         nearby = gff_chr[gff_chr["DIST_BP"] <= w].sort_values("DIST_BP")
-        
         for _, g in nearby.iterrows():
             res.append({
-                "SNP": s.get("SNP", f"{ch}:{pos}"), 
-                "CHR": ch,
-                "SNP_POS": int(pos), 
-                "GENE": g["GENE"],
-                "GENE_START": int(g["START"]), 
-                "GENE_END": int(g["END"]),
-                "DIST_BP": int(g["DIST_BP"]),
-                "DIST_KB": round(g["DIST_BP"] / 1000.0, 2),
+                "SNP": s.get("SNP", f"{ch}:{pos}"), "CHR": ch, "SNP_POS": int(pos), 
+                "GENE": g["GENE"], "GENE_START": int(g["START"]), "GENE_END": int(g["END"]),
+                "DIST_BP": int(g["DIST_BP"]), "DIST_KB": round(g["DIST_BP"] / 1000.0, 2),
                 "LOCALISATION": "Dans le gène" if g["DIST_BP"] == 0 else f"{round(g['DIST_BP']/1000, 2)} kb"
             })
-            
     return pd.DataFrame(res)
 
 def query_string_network(genes, species, required_score=400):
