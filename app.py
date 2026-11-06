@@ -21,6 +21,37 @@ st.set_page_config(page_title="🦙 NW Camelids · VicPac4",
                    page_icon="🦙", layout="wide",
                    initial_sidebar_state="expanded")
 
+# ============================================================
+# FONCTIONS POUR L'IMPACT MOLECULAIRE (Intégrées ici pour éviter les erreurs de fichiers)
+# ============================================================
+def fetch_cds_sequence_from_ncbi(chrom, start, end):
+    """Récupère la séquence d'ADN d'une région via l'API NCBI."""
+    url = f"https://eutils.ncbi.nlm.nih.gov/entrez/eutils/efetch.fcgi?db=nuccore&id={chrom}&rettype=fasta&seq_start={start}&seq_stop={end}&retmode=text"
+    try:
+        r = requests.get(url, timeout=30)
+        if r.status_code == 200:
+            lines = r.text.strip().split("\n")
+            sequence = "".join([l for l in lines if not l.startswith(">")])
+            return sequence.upper()
+    except Exception:
+        pass
+    return None
+
+def translate_codon(codon):
+    """Traduit un codon en acide aminé (code génétique standard)."""
+    table = {
+        'ATA':'I', 'ATC':'I', 'ATT':'I', 'ATG':'M', 'ACA':'T', 'ACC':'T', 'ACG':'T', 'ACT':'T',
+        'AAC':'N', 'AAT':'N', 'AAA':'K', 'AAG':'K', 'AGC':'S', 'AGT':'S', 'AGA':'R', 'AGG':'R',
+        'CTA':'L', 'CTC':'L', 'CTG':'L', 'CTT':'L', 'CCA':'P', 'CCC':'P', 'CCG':'P', 'CCT':'P',
+        'CAC':'H', 'CAT':'H', 'CAA':'Q', 'CAG':'Q', 'CGA':'R', 'CGC':'R', 'CGG':'R', 'CGT':'R',
+        'GTA':'V', 'GTC':'V', 'GTG':'V', 'GTT':'V', 'GCA':'A', 'GCC':'A', 'GCG':'A', 'GCT':'A',
+        'GAC':'D', 'GAT':'D', 'GAA':'E', 'GAG':'E', 'GGA':'G', 'GGC':'G', 'GGG':'G', 'GGT':'G',
+        'TCA':'S', 'TCC':'S', 'TCG':'S', 'TCT':'S', 'TTC':'F', 'TTT':'F', 'TTA':'L', 'TTG':'L',
+        'TAC':'Y', 'TAT':'Y', 'TAA':'*', 'TAG':'*', 'TGC':'C', 'TGT':'C', 'TGA':'*', 'TGG':'W'
+    }
+    return table.get(codon, 'X')
+# ============================================================
+
 _KEYS = [
     "gt", "ind_df", "snp_df", "gt_filt", "ind_filt", "snp_filt",
     "gt_pruned", "snp_pruned", "gt_pre", "ind_pre", "snp_pre", "qc_stats",
@@ -284,7 +315,8 @@ def main():
         "🧪 GWAS", "🎯 Post-GWAS", "📈 GBLUP", "🧬 Annotation",
         "🧬 VEP & NCBI", "🧬 Structure 3D", "🧬 Alignement",
         "🔬 Méta-analyse", "🧠 ML", "🧬 Haplotypes", "🌍 LiftOver", "📤 Export",
-        "📊 Diversité", "⚖️ Comparaison 2 à 2", "🧬 Blocs de LD", "📊 Métriques comparatives"
+        "📊 Diversité", "⚖️ Comparaison 2 à 2", "🧬 Blocs de LD", "📊 Métriques comparatives",
+        "🧬 Impact Moléculaire"
     ])
 
     with TABS[0]:
@@ -580,29 +612,64 @@ def main():
             st.download_button("⬇ Télécharger (CSV)", st.session_state.ncbi_gene_res.to_csv(index=False).encode(), "genes_ncbi.csv", "text/csv")
 
     with TABS[13]:
-        genes = []
-        if st.session_state.vep_res is not None:
-            genes = [g for g in st.session_state.vep_res["GENE"].dropna().unique() if g not in ("N/A", "Intergenic/Non-codant", "nan", "")]
-        if genes:
-            g = st.selectbox("Gène", genes, key="af_gene")
-            if st.button("▶ Charger 3D", key="af_btn"):
-                uid = fetch_uniprot_id(g, cfg["taxon"])
-                if uid:
-                    pdb = fetch_alphafold_pdb(uid)
-                    if pdb: render_3d_structure(pdb, style="cartoon")
-                    else: st.error("Structure introuvable.")
-                else: st.error("Gène non trouvé.")
+        st.subheader("🧬 Structure 3D (AlphaFold)")
+        st.info("💡 Cette analyse utilise les gènes identifiés dans l'onglet 'Annotation' pour récupérer leur structure 3D via AlphaFold.")
+        
+        genes_list = []
+        if st.session_state.ann_df is not None and not st.session_state.ann_df.empty:
+            genes_list = st.session_state.ann_df["GENE"].dropna().unique().tolist()
+            genes_list = [g for g in genes_list if g not in ("N/A", "nan", "") and not g.startswith("LOC")]
+        elif st.session_state.vep_res is not None:
+            genes_list = st.session_state.vep_res["GENE"].dropna().unique().tolist()
+            genes_list = [g for g in genes_list if g not in ("N/A", "Intergenic/Non-codant", "nan", "")]
+
+        if genes_list:
+            g = st.selectbox("Choisissez un gène à visualiser en 3D :", genes_list, key="af_gene")
+            if st.button("▶ Charger la structure 3D", key="af_btn"):
+                with st.spinner(f"Recherche de l'identifiant UniProt pour {g}..."):
+                    uid = fetch_uniprot_id(g, "9839") 
+                    if uid:
+                        st.success(f"✅ Identifiant UniProt trouvé : {uid}")
+                        with st.spinner("Téléchargement de la structure AlphaFold..."):
+                            pdb = fetch_alphafold_pdb(uid)
+                            if pdb:
+                                render_3d_structure(pdb, style="cartoon")
+                            else:
+                                st.error("Structure AlphaFold introuvable pour cet identifiant.")
+                    else:
+                        st.warning(f"⚠️ Aucun identifiant UniProt trouvé pour le gène {g} chez l'Alpaga.")
+        else:
+            st.warning("⚠️ Aucun gène trouvé. Veuillez d'abord lancer une annotation dans l'onglet 'Annotation'.")
 
     with TABS[14]:
         st.info("Alignement disponible via les résultats GWAS/Sélection.")
 
     with TABS[15]:
-        genes = []
-        if st.session_state.vep_res is not None:
-            genes = [g for g in st.session_state.vep_res["GENE"].dropna().unique() if g not in ("N/A", "Intergenic/Non-codant", "nan", "")]
-        if genes and st.button("🔬 Lancer enrichissement", key="enr_btn"):
-            enr = run_enrichment(genes, organism="Human")
-            if not enr.empty: st.dataframe(enr.head(30), use_container_width=True)
+        st.subheader("🔬 Méta-analyse (Enrichissement Fonctionnel)")
+        st.info("💡 Cette analyse utilise les gènes identifiés dans l'onglet 'Annotation' pour trouver les voies biologiques (KEGG/GO) enrichies.")
+        
+        genes_enr = []
+        if st.session_state.ann_df is not None and not st.session_state.ann_df.empty:
+            genes_enr = st.session_state.ann_df["GENE"].dropna().unique().tolist()
+            genes_enr = [g for g in genes_enr if g not in ("N/A", "nan", "") and not g.startswith("LOC")]
+        elif st.session_state.vep_res is not None:
+            genes_enr = st.session_state.vep_res["GENE"].dropna().unique().tolist()
+            genes_enr = [g for g in genes_enr if g not in ("N/A", "Intergenic/Non-codant", "nan", "")]
+
+        if genes_enr:
+            st.write(f"**Gènes analysés ({len(genes_enr)}) :** {', '.join(genes_enr[:10])}...")
+            if st.button("🚀 Lancer l'enrichissement (KEGG & GO)", key="enr_btn"):
+                with st.spinner("Interrogation de la base de données Enrichr (peut prendre 30 sec)..."):
+                    enr = run_enrichment(genes_enr, organism="Human")
+                    
+                if not enr.empty:
+                    st.success("✅ Enrichissement terminé !")
+                    st.dataframe(enr.head(30), use_container_width=True)
+                    st.download_button("⬇ Télécharger (CSV)", enr.to_csv(index=False).encode(), "enrichissement_kegg.csv", "text/csv")
+                else:
+                    st.warning("⚠️ Aucune voie enrichie trouvée (ou API surchargée). Essayez de relancer.")
+        else:
+            st.warning("⚠️ Aucun gène trouvé. Veuillez d'abord lancer une annotation dans l'onglet 'Annotation'.")
 
     with TABS[16]:
         if st.session_state.pheno_df is not None:
@@ -766,6 +833,66 @@ def main():
                 df_res = pd.DataFrame(results)
                 st.dataframe(df_res, use_container_width=True)
                 st.download_button("⬇ Télécharger (CSV)", df_res.to_csv(index=False).encode(), "comparaison_races.csv", "text/csv")
+
+    # --- 24 IMPACT MOLECULAIRE ---
+    with TABS[24]:
+        st.subheader("🧬 Analyse de l'Impact Moléculaire d'une Mutation")
+        st.info("💡 Cet onglet analyse la conséquence d'un SNP sur la protéine, puis guide vers les outils externes pour les prédictions SIFT/PolyPhen.")
+        
+        # 1. Sélection du SNP (depuis l'annotation)
+        if st.session_state.ann_df is not None and not st.session_state.ann_df.empty:
+            df_ann = st.session_state.ann_df.copy()
+            # On ne garde que les SNP "Dans le gène"
+            df_in_gene = df_ann[df_ann["DIST_BP"] == 0]
+            
+            if not df_in_gene.empty:
+                snp_sel = st.selectbox("Choisissez un SNP (situé dans un gène) :", 
+                                       df_in_gene["SNP"].unique().tolist())
+                row = df_in_gene[df_in_gene["SNP"] == snp_sel].iloc[0]
+                
+                st.write(f"**Gène :** {row['GENE']}")
+                st.write(f"**Position :** Chr {row['CHR']} : {row['SNP_POS']} bp")
+                
+                if st.button("🔬 Analyser la mutation"):
+                    with st.spinner("Récupération de la séquence du gène depuis NCBI..."):
+                        # On récupère une fenêtre de +/- 10 bp autour du SNP pour trouver le codon
+                        seq = fetch_cds_sequence_from_ncbi(row["CHR"], 
+                                                            max(1, row["SNP_POS"] - 10), 
+                                                            row["SNP_POS"] + 10)
+                    
+                    if seq and len(seq) >= 21:
+                        st.success(f"✅ Séquence récupérée ({len(seq)} bp)")
+                        
+                        # Trouver la phase de lecture (on essaie les 3 cadres)
+                        for frame in range(3):
+                            codons = [seq[i:i+3] for i in range(frame, len(seq)-2, 3)]
+                            if len(codons) >= 7:
+                                codon_central = codons[7] if frame == 0 else codons[6] if frame == 1 else codons[6]
+                                aa = translate_codon(codon_central)
+                                if aa != 'X' and aa != '*':
+                                    st.write(f"**Cadre de lecture {frame+1} :** Codon {codon_central} → Acide aminé **{aa}**")
+                        
+                        st.warning("⚠️ Pour identifier précisément l'exon et la position du codon dans la protéine, utilisez VEP (voir ci-dessous).")
+                    else:
+                        st.error("❌ Impossible de récupérer la séquence. Vérifiez le numéro d'accession du chromosome.")
+                
+                st.divider()
+                st.subheader("🎯 Prédiction de l'Impact Fonctionnel (SIFT / PolyPhen-2)")
+                st.markdown(f"""
+                **Pour obtenir les prédictions SIFT et PolyPhen-2**, utilisez l'outil de référence :
+                
+                1.  Rendez-vous sur **[Ensembl VEP](https://www.ensembl.org/Tools/VEP)**.
+                2.  Dans le champ "Variant", entrez : `{row['CHR']} {row['SNP_POS']} . A G` (adaptez les allèles A/G selon votre SNP).
+                3.  Sélectionnez l'espèce **"Alpaca"** dans le menu déroulant.
+                4.  Cliquez sur "Run". VEP vous donnera :
+                    *   Le changement d'acide aminé (ex: `p.Arg273His`).
+                    *   Le score **SIFT** (délétère si < 0.05).
+                    *   Le score **PolyPhen-2** (probablement délétère si > 0.85).
+                """)
+            else:
+                st.warning("⚠️ Aucun SNP 'Dans le gène' trouvé. Lancez d'abord une annotation.")
+        else:
+            st.warning("⚠️ Veuillez d'abord lancer une annotation dans l'onglet 'Annotation'.")
 
 if __name__ == "__main__":
     main()
