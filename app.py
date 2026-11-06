@@ -642,7 +642,85 @@ def main():
             st.warning("⚠️ Aucun gène trouvé. Veuillez d'abord lancer une annotation dans l'onglet 'Annotation'.")
 
     with TABS[14]:
-        st.info("Alignement disponible via les résultats GWAS/Sélection.")
+        st.subheader("🧬 Alignement de Séquences")
+        st.info("💡 Cet onglet permet de comparer la séquence de référence de l'Alpaga (VicPac4) autour d'un SNP avec une séquence d'une autre espèce (ex: Homme, Vache) ou une séquence que vous collez.")
+        
+        # 1. Sélection du SNP
+        if st.session_state.ann_df is not None and not st.session_state.ann_df.empty:
+            df_ann = st.session_state.ann_df.copy()
+            snp_sel = st.selectbox("Choisissez un SNP :", df_ann["SNP"].unique().tolist(), key="align_snp")
+            row = df_ann[df_ann["SNP"] == snp_sel].iloc[0]
+            
+            st.write(f"**Position :** Chr {row['CHR']} : {row['SNP_POS']} bp")
+            
+            # 2. Récupération de la séquence de référence
+            if st.button("📥 Récupérer la séquence de référence (Alpaga)", key="get_ref_seq"):
+                with st.spinner("Téléchargement depuis NCBI..."):
+                    # On prend 100 bp de chaque côté du SNP
+                    start = max(1, row["SNP_POS"] - 100)
+                    end = row["SNP_POS"] + 100
+                    ref_seq = fetch_cds_sequence_from_ncbi(row["CHR"], start, end)
+                    
+                if ref_seq:
+                    st.session_state.align_ref_seq = ref_seq
+                    st.success(f"✅ Séquence de référence récupérée ({len(ref_seq)} bp)")
+                else:
+                    st.error("❌ Impossible de récupérer la séquence. Vérifiez le numéro d'accession du chromosome.")
+            
+            # 3. Affichage et alignement
+            if st.session_state.get("align_ref_seq") is not None:
+                st.text_area("Séquence de référence (Alpaga) :", st.session_state.align_ref_seq, height=100)
+                
+                st.subheader("🔬 Séquence à comparer")
+                seq_to_compare = st.text_area("Collez une séquence (ADN) ici pour l'aligner :", height=100)
+                
+                if seq_to_compare:
+                    # Nettoyage de la séquence entrante
+                    seq_to_compare = re.sub(r"[^ATCG]", "", seq_to_compare.upper())
+                    st.write(f"Longueur de la séquence à comparer : {len(seq_to_compare)} bp")
+                    
+                    if st.button("🚀 Lancer l'alignement", key="run_align"):
+                        with st.spinner("Alignement en cours..."):
+                            try:
+                                from Bio import Align
+                                aligner = Align.PairwiseAligner()
+                                aligner.mode = "global"
+                                alignments = aligner.align(st.session_state.align_ref_seq, seq_to_compare)
+                                
+                                if len(alignments) > 0:
+                                    aln = alignments[0]
+                                    # Affichage HTML de l'alignement
+                                    html = "<div style='font-family: monospace; font-size: 14px; overflow-x: auto;'>"
+                                    
+                                    # Séquence de référence
+                                    html += "<b>Alpaga   :</b> "
+                                    for char in aln[0]:
+                                        html += f"<span style='color: grey;'>{char}</span>"
+                                    html += "<br>"
+                                    
+                                    # Séquence comparée (avec surlignage des différences)
+                                    html += "<b>Comparée :</b> "
+                                    for ref_char, query_char in zip(aln[0], aln[1]):
+                                        if ref_char == "-" or query_char == "-":
+                                            html += f"<span style='color: orange; font-weight: bold;'>{query_char}</span>"
+                                        elif ref_char != query_char:
+                                            html += f"<span style='background-color: yellow; color: red; font-weight: bold;'>{query_char}</span>"
+                                        else:
+                                            html += f"<span style='color: green;'>{query_char}</span>"
+                                    html += "</div>"
+                                    
+                                    st.markdown(html, unsafe_allow_html=True)
+                                    
+                                    # Calcul du score d'identité
+                                    matches = sum(1 for a, b in zip(aln[0], aln[1]) if a == b)
+                                    identity = (matches / len(aln[0])) * 100
+                                    st.metric("Identité de séquence", f"{identity:.2f} %")
+                                else:
+                                    st.warning("Aucun alignement trouvé.")
+                            except Exception as e:
+                                st.error(f"❌ Erreur lors de l'alignement : {e}")
+        else:
+            st.warning("⚠️ Veuillez d'abord lancer une annotation dans l'onglet 'Annotation'.")
 
     with TABS[15]:
         st.subheader("🔬 Méta-analyse (Enrichissement Fonctionnel)")
