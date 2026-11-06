@@ -104,6 +104,18 @@ def main():
         )
         st.session_state.grouping_mode = grouping_mode
 
+        # ============================================================
+        # CORRECTION : MISE A JOUR AUTOMATIQUE DES GROUPES (FID)
+        # ============================================================
+        if st.session_state.ind_df is not None and "Pays" in st.session_state.ind_df.columns:
+            if grouping_mode.startswith("🌍") and "Pays" in st.session_state.ind_df.columns:
+                st.session_state.ind_df["FID"] = st.session_state.ind_df["Pays"]
+            elif grouping_mode.startswith("🦙") and "Espece" in st.session_state.ind_df.columns:
+                st.session_state.ind_df["FID"] = st.session_state.ind_df["Espece"]
+            elif grouping_mode.startswith("🏷️") and "Race" in st.session_state.ind_df.columns:
+                st.session_state.ind_df["FID"] = st.session_state.ind_df["Race"]
+        # ============================================================
+
         st.divider()
         st.header("📁 1. Annotations SNP")
         f_map = st.file_uploader(".map", type=["map", "gz"], key="map_up")
@@ -154,9 +166,6 @@ def main():
             except Exception as e:
                 st.error(f"❌ {e}")
 
-        # ============================================================
-        # EXTRACTION DIRECTE DEPUIS LE NOM (La méthode infaillible)
-        # ============================================================
         st.divider()
         st.header("📋 2.5 Métadonnées (Espèces / Races)")
         meta_file = st.file_uploader("NWC_Meta_Sample_Details_Suheil.xlsx", type=["xlsx", "csv"], key="meta_up")
@@ -220,6 +229,11 @@ def main():
                             if n_isolated > 0:
                                 st.session_state.gt = st.session_state.gt[mask.values, :]
                                 st.session_state.ind_df = ind_species[mask].copy()
+                                # On met à jour le FID selon le mode actuel
+                                if grouping_mode.startswith("🌍"):
+                                    st.session_state.ind_df["FID"] = st.session_state.ind_df["Pays"]
+                                elif grouping_mode.startswith("🏷️"):
+                                    st.session_state.ind_df["FID"] = st.session_state.ind_df["Race"]
                                 st.success(f"🔬 **Mode Espèce** : Analyse isolée de {n_isolated} individus ({espece_cible}).")
                             else:
                                 st.error(f"❌ Aucun animal trouvé pour {espece_cible}.")
@@ -517,7 +531,6 @@ def main():
             except Exception as e:
                 st.error(f"❌ Erreur : {e}")
 
-        # --- AFFICHAGE DES RÉSULTATS ET DU GRAPHIQUE VISUEL ---
         if st.session_state.ann_df is not None and not st.session_state.ann_df.empty:
             df_res = st.session_state.ann_df.copy()
             
