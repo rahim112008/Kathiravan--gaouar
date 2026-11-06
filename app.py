@@ -63,24 +63,24 @@ def update_data_filters(species_key, grouping_mode):
     ind_orig = st.session_state.ind_df_original
 
     # 1. Filtrage par Espèce
-    if species_key != "🌍 Toutes les espèces (Global)":
-        espece_map = {"Alpaga": "Alpaca", "Lama": "Llama", "Guanaco": "Guanaco", "Vigogne": "Vicugna"}
-        target = None
-        for k, v in espece_map.items():
-            if k in species_key:
-                target = v
-                break
-        
-        if target and "Espece" in ind_orig.columns:
-            mask = ind_orig["Espece"] == target
-            gt_filtered = gt_orig[mask.values, :]
-            ind_filtered = ind_orig[mask].copy().reset_index(drop=True)
-        else:
-            gt_filtered = gt_orig
-            ind_filtered = ind_orig.copy()
+if species_key != "🌍 Toutes les espèces (Global)":
+    espece_map = {"Alpaga": "Alpaca", "Lama": "Llama", "Guanaco": "Guanaco", "Vigogne": "Vicugna"}
+    target = None
+    for k, v in espece_map.items():
+        if k in species_key:
+            target = v
+            break
+    
+    if target and "Espece" in ind_orig.columns:
+        mask = ind_orig["Espece"] == target
+        gt_filtered = gt_orig[mask.values, :]
+        ind_filtered = ind_orig[mask].copy().reset_index(drop=True)
     else:
         gt_filtered = gt_orig
         ind_filtered = ind_orig.copy()
+else:
+    gt_filtered = gt_orig
+    ind_filtered = ind_orig.copy()
 
     # 2. Mise à jour de la colonne FID (Groupe) selon le mode de regroupement
     if grouping_mode.startswith("🌍") and "Pays" in ind_filtered.columns:
