@@ -1,4 +1,4 @@
-"""app.py — NW Camelids Genomics Platform (Version Finale)"""
+"""app.py — NW Camelids Genomics Platform (Version Finale Fluide)"""
 import gzip, warnings
 import numpy as np
 import pandas as pd
@@ -33,17 +33,72 @@ _KEYS = [
     "gebv_df", "gblup_stats",
     "vep_res", "ncbi_gene_res", "sel_ann", "sel_gff", "ann_df",
     "mapping_df", "pair_res", "current_species", "grouping_mode",
-    "ind_df_pays", "ind_df_species", "ind_df_race", "snps_specifiques"
+    "snps_specifiques",
+    # Nouvelles clés pour l'architecture fluide
+    "gt_original", "ind_df_original", "snp_df_original",
+    "last_species_filter", "last_grouping_filter"
 ]
 for _k in _KEYS:
     if _k not in st.session_state:
         st.session_state[_k] = None
 
 def reset_derived():
+    """Efface tous les résultats calculés (PCA, QC, etc.)"""
     for k in _KEYS:
         if k not in ("gt", "ind_df", "snp_df", "current_species",
-                     "grouping_mode", "ind_df_pays", "ind_df_species", "ind_df_race"):
+                     "grouping_mode", "snps_specifiques",
+                     "gt_original", "ind_df_original", "snp_df_original",
+                     "last_species_filter", "last_grouping_filter"):
             st.session_state[k] = None
+
+def update_data_filters(species_key, grouping_mode):
+    """
+    Recalcule st.session_state.gt et ind_df à partir des originaux (gt_original)
+    en fonction des choix de l'utilisateur. Ne détruit jamais les originaux.
+    """
+    if st.session_state.gt_original is None or st.session_state.ind_df_original is None:
+        return
+
+    gt_orig = st.session_state.gt_original
+    ind_orig = st.session_state.ind_df_original
+
+    # 1. Filtrage par Espèce
+    if species_key != "🌍 Toutes les espèces (Global)":
+        espece_map = {"Alpaga": "Alpaca", "Lama": "Llama", "Guanaco": "Guanaco", "Vigogne": "Vicugna"}
+        target = None
+        for k, v in espece_map.items():
+            if k in species_key:
+                target = v
+                break
+        
+        if target and "Espece" in ind_orig.columns:
+            mask = ind_orig["Espece"] == target
+            gt_filtered = gt_orig[mask.values, :]
+            ind_filtered = ind_orig[mask].copy().reset_index(drop=True)
+        else:
+            gt_filtered = gt_orig
+            ind_filtered = ind_orig.copy()
+    else:
+        gt_filtered = gt_orig
+        ind_filtered = ind_orig.copy()
+
+    # 2. Mise à jour de la colonne FID (Groupe) selon le mode de regroupement
+    if grouping_mode.startswith("🌍") and "Pays" in ind_filtered.columns:
+        ind_filtered["FID"] = ind_filtered["Pays"]
+    elif grouping_mode.startswith("🦙") and "Espece" in ind_filtered.columns:
+        ind_filtered["FID"] = ind_filtered["Espece"]
+    elif grouping_mode.startswith("🏷️") and "Race" in ind_filtered.columns:
+        ind_filtered["FID"] = ind_filtered["Race"]
+    else:
+        ind_filtered["FID"] = ind_filtered["IID"]
+
+    # 3. Sauvegarde dans le session_state
+    st.session_state.gt = gt_filtered
+    st.session_state.ind_df = ind_filtered
+    st.session_state.snp_df = st.session_state.snp_df_original.copy()
+    
+    st.session_state.last_species_filter = species_key
+    st.session_state.last_grouping_filter = grouping_mode
 
 @st.cache_data(show_spinner=False)
 def load_map_uploaded(file_bytes: bytes, fname: str) -> pd.DataFrame:
@@ -87,14 +142,6 @@ def main():
         st.markdown(f"**Caryotype** : {cfg['karyotype']}")
         st.markdown(f"**Taxon NCBI** : `{cfg['taxon']}`")
 
-        if st.session_state.current_species is None:
-            st.session_state.current_species = species_key
-        elif st.session_state.current_species != species_key:
-            st.session_state.current_species = species_key
-            reset_derived()
-            st.session_state.gt = st.session_state.ind_df = st.session_state.snp_df = None
-            st.warning("🔄 Mode changé — réinitialisé. Rechargez les fichiers.")
-
         st.divider()
         st.header("🎯 Mode de regroupement")
         grouping_mode = st.radio(
@@ -102,18 +149,16 @@ def main():
             ["🌍 Par Pays", "🦙 Par Espèce", "🏷️ Par Race (Huacaya, Suri...)"],
             index=0,
         )
-        st.session_state.grouping_mode = grouping_mode
 
         # ============================================================
-        # CORRECTION : MISE A JOUR AUTOMATIQUE DES GROUPES (FID)
+        # MISE A JOUR AUTOMATIQUE LORS DU CHANGEMENT DE FILTRE
         # ============================================================
-        if st.session_state.ind_df is not None and "Pays" in st.session_state.ind_df.columns:
-            if grouping_mode.startswith("🌍") and "Pays" in st.session_state.ind_df.columns:
-                st.session_state.ind_df["FID"] = st.session_state.ind_df["Pays"]
-            elif grouping_mode.startswith("🦙") and "Espece" in st.session_state.ind_df.columns:
-                st.session_state.ind_df["FID"] = st.session_state.ind_df["Espece"]
-            elif grouping_mode.startswith("🏷️") and "Race" in st.session_state.ind_df.columns:
-                st.session_state.ind_df["FID"] = st.session_state.ind_df["Race"]
+        if (st.session_state.gt_original is not None and 
+            (st.session_state.last_species_filter != species_key or 
+             st.session_state.last_grouping_filter != grouping_mode)):
+            
+            reset_derived()
+            update_data_filters(species_key, grouping_mode)
         # ============================================================
 
         st.divider()
@@ -140,7 +185,8 @@ def main():
                     map_df['CHR'] = map_df['CHR'].astype(str).str.replace(r'\.0$', '', regex=True)
                     map_df['BP'] = pd.to_numeric(map_df['BP'], errors='coerce').fillna(0).astype(int)
                     map_df['CM'] = pd.to_numeric(map_df['CM'], errors='coerce').fillna(0.0)
-                    st.session_state.snp_df = map_df
+                    st.session_state.snp_df_original = map_df
+                    st.session_state.snp_df = map_df.copy()
                     st.success(f"✅ {len(map_df):,} SNP chargés sur {map_df['CHR'].nunique()} chromosomes")
                 else:
                     st.error("❌ Aucune donnée valide.")
@@ -150,18 +196,24 @@ def main():
         st.divider()
         st.header("🧬 2. Génotypes")
         ped = st.file_uploader(".ped", type=["ped", "txt", "gz"], key="ped_up")
-        if (ped and st.session_state.snp_df is not None and st.button("📥 Charger PED", use_container_width=True)):
+        if (ped and st.session_state.snp_df_original is not None and st.button("📥 Charger PED", use_container_width=True)):
             try:
                 with st.spinner("Parsing…"):
-                    gt, ind, a1, a2 = parse_ped(ped.read(), len(st.session_state.snp_df))
-                snp = st.session_state.snp_df.copy()
+                    gt, ind, a1, a2 = parse_ped(ped.read(), len(st.session_state.snp_df_original))
+                snp = st.session_state.snp_df_original.copy()
                 if len(snp) > gt.shape[1]: snp = snp.iloc[:gt.shape[1]].reset_index(drop=True)
                 elif len(snp) < gt.shape[1]: gt = gt[:, :len(snp)]
                 snp["A1"] = a1; snp["A2"] = a2
-                reset_derived()
+                
                 ind = rec_fid(ind)
-                st.session_state.ind_df_pays = ind.copy()
-                st.session_state.update({"gt": gt, "ind_df": ind.copy(), "snp_df": snp})
+                
+                # On sauvegarde les originaux intacts
+                st.session_state.gt_original = gt
+                st.session_state.ind_df_original = ind.copy()
+                st.session_state.snp_df_original = snp
+                
+                reset_derived()
+                update_data_filters(species_key, grouping_mode)
                 st.success(f"✅ {gt.shape[0]} × {gt.shape[1]}")
             except Exception as e:
                 st.error(f"❌ {e}")
@@ -170,7 +222,7 @@ def main():
         st.header("📋 2.5 Métadonnées (Espèces / Races)")
         meta_file = st.file_uploader("NWC_Meta_Sample_Details_Suheil.xlsx", type=["xlsx", "csv"], key="meta_up")
         
-        if meta_file and st.session_state.ind_df_pays is not None:
+        if meta_file and st.session_state.ind_df_original is not None:
             try:
                 if meta_file.name.endswith(".xlsx"):
                     df_excel = pd.read_excel(meta_file)
@@ -178,78 +230,39 @@ def main():
                     df_excel = pd.read_csv(meta_file)
 
                 if st.button("🔗 Extraire les Métadonnées", use_container_width=True):
-                    ind_pays = st.session_state.ind_df_pays.copy()
+                    ind_orig = st.session_state.ind_df_original.copy()
                     
-                    ind_pays["IID_clean"] = ind_pays["IID"].astype(str).str.replace(".CEL", "", regex=False).str.strip().str.upper()
-                    
-                    ind_pays["Code_Pays"] = ind_pays["IID_clean"].str.split('_').str[0]
-                    ind_pays["Code_Race"] = ind_pays["IID_clean"].str.split('_').str[1]
+                    ind_orig["IID_clean"] = ind_orig["IID"].astype(str).str.replace(".CEL", "", regex=False).str.strip().str.upper()
+                    ind_orig["Code_Pays"] = ind_orig["IID_clean"].str.split('_').str[0]
+                    ind_orig["Code_Race"] = ind_orig["IID_clean"].str.split('_').str[1]
 
                     dict_pays = {'ARG': 'Argentina', 'BOL': 'Bolivia', 'PER': 'Peru', 'USA': 'USA', 'CHL': 'Chile'}
                     
                     dict_race = {
-                        'BAH': ('Alpaca', 'Bolivian Huacaya'),
-                        'BAS': ('Alpaca', 'Bolivian Suri'),
-                        'PAH': ('Alpaca', 'Peruvian Huacaya'),
-                        'PAS': ('Alpaca', 'Peruvian Suri'),
-                        'ULP': ('Alpaca', 'US Alpaca'),
-                        'ALG': ('Guanaco', 'Argentinian Guanaco'),
-                        'CLG': ('Guanaco', 'US Guanaco'),
-                        'ALL': ('Llama', 'Argentinian Llama'),
-                        'BLL': ('Llama', 'Bolivian Llama'),
-                        'AVS': ('Vicugna', 'Argentinian Vicugna'),
-                        'BVM': ('Vicugna', 'Bolivian V.Mensalis'),
-                        'BVS': ('Vicugna', 'Bolivian V.Sp.'),
-                        'BVV': ('Vicugna', 'Bolivian V.Vicugna'),
-                        'UVV': ('Vicugna', 'US Vicugna')
+                        'BAH': ('Alpaca', 'Bolivian Huacaya'), 'BAS': ('Alpaca', 'Bolivian Suri'),
+                        'PAH': ('Alpaca', 'Peruvian Huacaya'), 'PAS': ('Alpaca', 'Peruvian Suri'),
+                        'ULP': ('Alpaca', 'US Alpaca'), 'ALG': ('Guanaco', 'Argentinian Guanaco'),
+                        'CLG': ('Guanaco', 'US Guanaco'), 'ALL': ('Llama', 'Argentinian Llama'),
+                        'BLL': ('Llama', 'Bolivian Llama'), 'AVS': ('Vicugna', 'Argentinian Vicugna'),
+                        'BVM': ('Vicugna', 'Bolivian V.Mensalis'), 'BVS': ('Vicugna', 'Bolivian V.Sp.'),
+                        'BVV': ('Vicugna', 'Bolivian V.Vicugna'), 'UVV': ('Vicugna', 'US Vicugna')
                     }
 
-                    ind_pays["Pays"] = ind_pays["Code_Pays"].map(dict_pays).fillna("Inconnu")
-                    ind_pays["Espece"] = ind_pays["Code_Race"].map(lambda x: dict_race.get(x, ('Inconnu', 'Inconnu'))[0])
-                    ind_pays["Race"] = ind_pays["Code_Race"].map(lambda x: dict_race.get(x, ('Inconnu', 'Inconnu'))[1])
-
-                    ind_pays_out = ind_pays.copy(); ind_pays_out["FID"] = ind_pays_out["Pays"]
-                    ind_species = ind_pays.copy(); ind_species["FID"] = ind_species["Espece"]
-                    ind_race = ind_pays.copy(); ind_race["FID"] = ind_race["Race"]
-
-                    st.session_state.ind_df_pays = ind_pays_out
-                    st.session_state.ind_df_species = ind_species
-                    st.session_state.ind_df_race = ind_race
+                    ind_orig["Pays"] = ind_orig["Code_Pays"].map(dict_pays).fillna("Inconnu")
+                    ind_orig["Espece"] = ind_orig["Code_Race"].map(lambda x: dict_race.get(x, ('Inconnu', 'Inconnu'))[0])
+                    ind_orig["Race"] = ind_orig["Code_Race"].map(lambda x: dict_race.get(x, ('Inconnu', 'Inconnu'))[1])
                     
-                    if species_key != "🌍 Toutes les espèces (Global)":
-                        espece_cible = None
-                        if "Alpaga" in species_key: espece_cible = "Alpaca"
-                        elif "Lama" in species_key: espece_cible = "Llama"
-                        elif "Guanaco" in species_key: espece_cible = "Guanaco"
-                        elif "Vigogne" in species_key: espece_cible = "Vicugna"
-                        
-                        if espece_cible:
-                            mask = ind_species["Espece"] == espece_cible
-                            n_isolated = mask.sum()
-                            if n_isolated > 0:
-                                st.session_state.gt = st.session_state.gt[mask.values, :]
-                                st.session_state.ind_df = ind_species[mask].copy()
-                                # On met à jour le FID selon le mode actuel
-                                if grouping_mode.startswith("🌍"):
-                                    st.session_state.ind_df["FID"] = st.session_state.ind_df["Pays"]
-                                elif grouping_mode.startswith("🏷️"):
-                                    st.session_state.ind_df["FID"] = st.session_state.ind_df["Race"]
-                                st.success(f"🔬 **Mode Espèce** : Analyse isolée de {n_isolated} individus ({espece_cible}).")
-                            else:
-                                st.error(f"❌ Aucun animal trouvé pour {espece_cible}.")
-                    else:
-                        if grouping_mode.startswith("🏷️"):
-                            st.session_state.ind_df = ind_race.copy()
-                        elif grouping_mode.startswith("🦙"):
-                            st.session_state.ind_df = ind_species.copy()
-                        else:
-                            st.session_state.ind_df = ind_pays_out.copy()
-
+                    # Sauvegarde de la version enrichie dans l'original
+                    st.session_state.ind_df_original = ind_orig
+                    
+                    reset_derived()
+                    update_data_filters(species_key, grouping_mode)
+                    
                     st.success("✅ Métadonnées extraites avec succès !")
                     st.write("**Répartition par Espèce :**")
-                    st.dataframe(ind_species["Espece"].value_counts().reset_index(), use_container_width=True)
+                    st.dataframe(ind_orig["Espece"].value_counts().reset_index(), use_container_width=True)
                     st.write("**Répartition par Race :**")
-                    st.dataframe(ind_race["Race"].value_counts().reset_index(), use_container_width=True)
+                    st.dataframe(ind_orig["Race"].value_counts().reset_index(), use_container_width=True)
             except Exception as e:
                 st.error(f"❌ Erreur Excel : {e}")
 
@@ -264,7 +277,7 @@ def main():
         het_sd    = st.slider("Het ±σ",     1.0, 5.0, 3.0, 0.1)
         ld_r2     = st.slider("LD r²",       0.05, 0.5, 0.2, 0.05)
 
-    current_mode = st.session_state.grouping_mode or "🌍 Par Pays"
+    current_mode = grouping_mode
     st.title(f"🦙 {species_key}")
     st.caption(f"Référence **{REFERENCE['name']}** · Groupement : **{current_mode}**")
 
