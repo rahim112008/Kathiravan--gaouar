@@ -34,7 +34,6 @@ _KEYS = [
     "vep_res", "ncbi_gene_res", "sel_ann", "sel_gff", "ann_df",
     "mapping_df", "pair_res", "current_species", "grouping_mode",
     "snps_specifiques",
-    # Nouvelles clés pour l'architecture fluide
     "gt_original", "ind_df_original", "snp_df_original",
     "last_species_filter", "last_grouping_filter"
 ]
@@ -43,7 +42,6 @@ for _k in _KEYS:
         st.session_state[_k] = None
 
 def reset_derived():
-    """Efface tous les résultats calculés (PCA, QC, etc.)"""
     for k in _KEYS:
         if k not in ("gt", "ind_df", "snp_df", "current_species",
                      "grouping_mode", "snps_specifiques",
@@ -52,37 +50,36 @@ def reset_derived():
             st.session_state[k] = None
 
 def update_data_filters(species_key, grouping_mode):
-    """
-    Recalcule st.session_state.gt et ind_df à partir des originaux (gt_original)
-    en fonction des choix de l'utilisateur. Ne détruit jamais les originaux.
-    """
     if st.session_state.gt_original is None or st.session_state.ind_df_original is None:
         return
 
     gt_orig = st.session_state.gt_original
     ind_orig = st.session_state.ind_df_original
 
-    # 1. Filtrage par Espèce
-if species_key != "🌍 Toutes les espèces (Global)":
-    espece_map = {"Alpaga": "Alpaca", "Lama": "Llama", "Guanaco": "Guanaco", "Vigogne": "Vicugna"}
-    target = None
-    for k, v in espece_map.items():
-        if k in species_key:
-            target = v
-            break
-    
-    if target and "Espece" in ind_orig.columns:
-        mask = ind_orig["Espece"] == target
-        gt_filtered = gt_orig[mask.values, :]
-        ind_filtered = ind_orig[mask].copy().reset_index(drop=True)
+    # 1. Filtrage par Espèce (Logique infaillible via noms latins)
+    if species_key != "🌍 Toutes les espèces (Global)":
+        target = None
+        if "Vicugna pacos" in species_key:
+            target = "Alpaca"
+        elif "Lama glama" in species_key:
+            target = "Llama"
+        elif "Lama guanicoe" in species_key:
+            target = "Guanaco"
+        elif "Vicugna vicugna" in species_key:
+            target = "Vicugna"
+        
+        if target and "Espece" in ind_orig.columns:
+            mask = ind_orig["Espece"] == target
+            gt_filtered = gt_orig[mask.values, :]
+            ind_filtered = ind_orig[mask].copy().reset_index(drop=True)
+        else:
+            gt_filtered = gt_orig
+            ind_filtered = ind_orig.copy()
     else:
         gt_filtered = gt_orig
         ind_filtered = ind_orig.copy()
-else:
-    gt_filtered = gt_orig
-    ind_filtered = ind_orig.copy()
 
-    # 2. Mise à jour de la colonne FID (Groupe) selon le mode de regroupement
+    # 2. Mise à jour de la colonne FID
     if grouping_mode.startswith("🌍") and "Pays" in ind_filtered.columns:
         ind_filtered["FID"] = ind_filtered["Pays"]
     elif grouping_mode.startswith("🦙") and "Espece" in ind_filtered.columns:
@@ -92,7 +89,6 @@ else:
     else:
         ind_filtered["FID"] = ind_filtered["IID"]
 
-    # 3. Sauvegarde dans le session_state
     st.session_state.gt = gt_filtered
     st.session_state.ind_df = ind_filtered
     st.session_state.snp_df = st.session_state.snp_df_original.copy()
@@ -150,16 +146,12 @@ def main():
             index=0,
         )
 
-        # ============================================================
-        # MISE A JOUR AUTOMATIQUE LORS DU CHANGEMENT DE FILTRE
-        # ============================================================
         if (st.session_state.gt_original is not None and 
             (st.session_state.last_species_filter != species_key or 
              st.session_state.last_grouping_filter != grouping_mode)):
             
             reset_derived()
             update_data_filters(species_key, grouping_mode)
-        # ============================================================
 
         st.divider()
         st.header("📁 1. Annotations SNP")
@@ -207,7 +199,6 @@ def main():
                 
                 ind = rec_fid(ind)
                 
-                # On sauvegarde les originaux intacts
                 st.session_state.gt_original = gt
                 st.session_state.ind_df_original = ind.copy()
                 st.session_state.snp_df_original = snp
@@ -252,7 +243,6 @@ def main():
                     ind_orig["Espece"] = ind_orig["Code_Race"].map(lambda x: dict_race.get(x, ('Inconnu', 'Inconnu'))[0])
                     ind_orig["Race"] = ind_orig["Code_Race"].map(lambda x: dict_race.get(x, ('Inconnu', 'Inconnu'))[1])
                     
-                    # Sauvegarde de la version enrichie dans l'original
                     st.session_state.ind_df_original = ind_orig
                     
                     reset_derived()
